@@ -1,0 +1,37 @@
+{
+  "_note": "占位价格表 —— **脱敏示例**。真实模型代号不进版本库（见 README「已知限制」）。",
+  "_usage": "复制成 app/pricing/placeholder.local.json 并填入真实模型名，或在 app/pricing/placeholder.local.json 里直接维护。本文件仅演示结构。",
+  "_why": "成本链路要能端到端验证，就需要一张价格表。厂商的内部模型名在公开价格表里查不到，所以按'所属公开家族最接近的一档'填占位单价，写入 source=user、版本串含 placeholder 字样，随时可被 PUT /api/pricing/override 覆盖。",
+  "_warning": "这些不是厂商的真实单价，只用于让看板跑通，不代表真实账单。",
+  "version": "user-placeholder-2026-10-09",
+  "prices": {
+    "model-ultra": {
+      "input": "3.00",
+      "output": "15.00",
+      "cache_read": "0.30",
+      "cache_write": "3.75"
+    },
+    "model-fast": {
+      "input": "0.27",
+      "output": "1.10",
+      "cache_read": "0.07",
+      "cache_write": "0.27"
+    },
+    "model-long-context": {
+      "input": "0.60",
+      "output": "2.50",
+      "cache_read": "0.15",
+      "cache_write": "0.60"
+    },
+    "model-preview-a": {
+      "input": "0.30",
+      "output": "1.20",
+      "cache_read": "0.08",
+      "cache_write": "0.30"
+    }
+  },
+  "aliases": {
+    "旗舰（示例）": "model-ultra",
+    "preview a": "model-preview-a"
+  }
+}

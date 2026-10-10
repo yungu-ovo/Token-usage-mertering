@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token 消耗看板 · Token Usage Metering</title>
+<style>
+  :root{
+    --bg:#0F172A;
+    --bg-grad-1:rgba(129,140,248,.10);
+    --bg-grad-2:rgba(34,211,238,.07);
+    --card:#1B2336;
+    --card-2:#161E2F;
+    --fg:#F8FAFC;
+    --muted:#94A3B8;
+    --muted-2:#64748B;
+    --border:rgba(148,163,184,.16);
+    --border-strong:rgba(148,163,184,.30);
+    --accent:#22C55E;
+    --warn:#F59E0B;
+    --danger:#EF4444;
+    --c1:#818CF8;
+    --c2:#22D3EE;
+    --c3:#FBBF24;
+    --c4:#F472B6;
+    --c5:#A3E635;
+    --radius:14px;
+    --font-sans:'Fira Sans',-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC','Microsoft YaHei',sans-serif;
+    --font-mono:'Fira Code','SFMono-Regular',Consolas,'Liberation Mono',monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg);
+    background-image:
+      radial-gradient(900px 500px at 12% -8%, var(--bg-grad-1), transparent 62%),
+      radial-gradient(760px 420px at 92% 4%, var(--bg-grad-2), transparent 60%);
+    background-attachment:fixed;
+    color:var(--fg);
+    font-family:var(--font-sans);
+    font-size:14px;
+    line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+  .num{font-family:var(--font-mono);font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+  .wrap{max-width:1420px;margin:0 auto;padding:0 24px 56px}
+
+  /* ---------- topbar ---------- */
+  .topbar{
+    position:sticky;top:0;z-index:50;
+    backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+    background:rgba(15,23,42,.74);
+    border-bottom:1px solid var(--border);
+  }
+  .topbar-in{
+    max-width:1420px;margin:0 auto;padding:14px 24px;
+    display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+  }
+  .brand{display:flex;align-items:center;gap:10px;margin-right:auto}
+  .brand-mark{
+    width:32px;height:32px;border-radius:9px;display:grid;place-items:center;
+    background:linear-gradient(145deg,rgba(129,140,248,.28),rgba(34,211,238,.18));
+    border:1px solid var(--border-strong);color:var(--c1);flex:none;
+  }
+  .brand-txt b{display:block;font-size:14px;font-weight:600;letter-spacing:.01em}
+  .brand-txt span{display:block;font-size:11.5px;color:var(--muted-2);font-family:var(--font-mono)}
+  .chip{
+    display:inline-flex;align-items:center;gap:6px;
+    font-size:11.5px;font-weight:500;padding:4px 9px;border-radius:999px;
+    border:1px solid var(--border-strong);color:var(--muted);background:rgba(255,255,255,.03);
+  }
+  .chip.demo{color:var(--warn);border-color:rgba(245,158,11,.38);background:rgba(245,158,11,.10)}
+  .seg{display:flex;gap:2px;padding:3px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--border)}
+  .seg button{
+    appearance:none;border:0;background:transparent;color:var(--muted);
+    font-family:var(--font-mono);font-size:12px;font-weight:500;
+    padding:5px 12px;border-radius:7px;cursor:pointer;transition:all .18s ease;
+  }
+  .seg button:hover{color:var(--fg);background:rgba(255,255,255,.05)}
+  .seg button[aria-pressed="true"]{background:rgba(129,140,248,.20);color:#C7D2FE;box-shadow:inset 0 0 0 1px rgba(129,140,248,.35)}
+  .icon-btn{
+    appearance:none;display:inline-flex;align-items:center;gap:7px;cursor:pointer;
+    background:rgba(255,255,255,.04);border:1px solid var(--border);color:var(--muted);
+    font-family:var(--font-sans);font-size:12.5px;padding:7px 12px;border-radius:9px;
+    transition:all .18s ease;min-height:34px;
+  }
+  .icon-btn:hover{color:var(--fg);border-color:var(--border-strong);background:rgba(255,255,255,.07)}
+  :focus-visible{outline:2px solid var(--c1);outline-offset:2px;border-radius:6px}
+
+  /* ---------- sections ---------- */
+  section{margin-top:26px}
+  .sec-head{display:flex;align-items:baseline;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+  .sec-head h2{margin:0;font-size:14.5px;font-weight:600;letter-spacing:.01em}
+  .sec-head .hint{font-size:12px;color:var(--muted-2);font-family:var(--font-mono)}
+
+  /* ---------- kpi ---------- */
+  .kpi-row{display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr 1fr;gap:14px}
+  .card{
+    background:linear-gradient(180deg,rgba(255,255,255,.038),rgba(255,255,255,.008));
+    background-color:var(--card);
+    border:1px solid var(--border);border-radius:var(--radius);
+    padding:16px 16px 15px;position:relative;overflow:hidden;
+  }
+  .card.star{border-color:rgba(245,158,11,.34);background-color:#1E2333;
+    box-shadow:0 0 0 1px rgba(245,158,11,.08),0 18px 40px -28px rgba(245,158,11,.5)}
+  .card.star::after{content:"";position:absolute;inset:0 0 auto 0;height:2px;
+    background:linear-gradient(90deg,var(--warn),rgba(245,158,11,0))}
+  .kpi-label{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:7px}
+  .kpi-value{
+    font-family:var(--font-mono);font-variant-numeric:tabular-nums;
+    font-size:26px;font-weight:600;letter-spacing:-.035em;margin:8px 0 0;
+  }
+  .kpi-value .unit{font-size:13px;color:var(--muted-2);font-weight:400;letter-spacing:0}
+  .kpi-meta{font-size:11.5px;color:var(--muted-2);margin-top:5px}
+  .kpi-foot{font-size:11.5px;color:var(--muted);margin-top:9px;padding-top:9px;border-top:1px dashed var(--border)}
+  .up{color:var(--danger)}
+  .ok{color:var(--accent)}
+  .wn{color:var(--warn)}
+  .tag{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:600;
+    padding:2px 7px;border-radius:6px;letter-spacing:.02em}
+  .tag.danger{color:#FCA5A5;background:rgba(239,68,68,.14);border:1px solid rgba(239,68,68,.28)}
+  .tag.ok{color:#86EFAC;background:rgba(34,197,94,.13);border:1px solid rgba(34,197,94,.26)}
+  .tag.warn{color:#FCD34D;background:rgba(245,158,11,.13);border:1px solid rgba(245,158,11,.28)}
+  .tag.neutral{color:var(--muted);background:rgba(148,163,184,.10);border:1px solid var(--border)}
+  .bar{height:5px;border-radius:999px;background:rgba(148,163,184,.16);overflow:hidden;margin-top:11px;position:relative}
+  .bar i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#F59E0B,#EF4444)}
+  .bar.time{position:absolute;left:0;top:0;height:100%;width:2px;background:rgba(248,250,252,.55)}
+  .stack-mini{display:flex;height:6px;border-radius:999px;overflow:hidden;margin-top:11px;background:rgba(148,163,184,.14)}
+  .stack-mini span{display:block;height:100%}
+
+  /* ---------- grids ---------- */
+  .g-2-1{display:grid;grid-template-columns:1.62fr 1fr;gap:14px}
+  .g-2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .card-h{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+  .card-h h3{margin:0;font-size:13px;font-weight:600;color:#E2E8F0}
+  .card-h .sub{font-size:11px;color:var(--muted-2);font-family:var(--font-mono);margin-left:auto}
+  .legend{display:flex;flex-wrap:wrap;gap:10px 16px;margin-top:10px}
+  .legend i{width:9px;height:9px;border-radius:3px;display:inline-block;margin-right:6px;vertical-align:-1px}
+  .legend span{font-size:11.5px;color:var(--muted)}
+
+  /* ---------- chart shell ---------- */
+  .chart{position:relative;width:100%}
+  .chart svg{display:block;width:100%;height:auto}
+  .tip{
+    position:absolute;pointer-events:none;opacity:0;transition:opacity .12s ease;
+    background:rgba(10,15,28,.95);border:1px solid var(--border-strong);
+    border-radius:9px;padding:8px 10px;font-size:11.5px;line-height:1.55;
+    box-shadow:0 12px 30px -12px rgba(0,0,0,.8);z-index:20;white-space:nowrap;
+  }
+  .tip b{font-family:var(--font-mono);font-weight:600}
+  .tip .t-dim{color:var(--muted-2)}
+
+  /* ---------- breakdown rows ---------- */
+  .brow{display:grid;grid-template-columns:1fr auto;gap:4px 12px;padding:9px 0;border-bottom:1px solid rgba(148,163,184,.09)}
+  .brow:last-child{border-bottom:0}
+  .brow .nm{font-size:12.5px;display:flex;align-items:center;gap:8px;min-width:0}
+  .brow .nm em{font-style:normal;color:var(--muted-2);font-size:11px;font-family:var(--font-mono);margin-left:auto;flex:none}
+  .brow .vl{font-family:var(--font-mono);font-size:12.5px;text-align:right;flex:none}
+  .brow .track{grid-column:1 / -1;height:6px;border-radius:999px;background:rgba(148,163,184,.12);overflow:hidden}
+  .brow .track i{display:block;height:100%;border-radius:999px}
+  .dot{width:9px;height:9px;border-radius:3px;flex:none}
+
+  /* ---------- insights ---------- */
+  .ins{display:flex;gap:11px;padding:12px 13px;border-radius:11px;border:1px solid var(--border);background:var(--card-2);align-items:flex-start}
+  .ins .ic{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;flex:none}
+  .ins h4{margin:0 0 3px;font-size:12.5px;font-weight:600}
+  .ins p{margin:0;font-size:11.5px;color:var(--muted);line-height:1.55}
+  .ins .act{margin-top:7px;font-size:11.5px;color:var(--c1);cursor:pointer;display:inline-flex;align-items:center;gap:4px;background:none;border:0;padding:0;font-family:inherit}
+  .ins .act:hover{text-decoration:underline}
+  .ins.warn{border-color:rgba(245,158,11,.26);background:linear-gradient(180deg,rgba(245,158,11,.06),rgba(245,158,11,.01))}
+  .ins.danger{border-color:rgba(239,68,68,.26);background:linear-gradient(180deg,rgba(239,68,68,.06),rgba(239,68,68,.01))}
+  .ins.ok{border-color:rgba(34,197,94,.24);background:linear-gradient(180deg,rgba(34,197,94,.06),rgba(34,197,94,.01))}
+  .ins.warn .ic{background:rgba(245,158,11,.14);color:var(--warn)}
+  .ins.danger .ic{background:rgba(239,68,68,.14);color:var(--danger)}
+  .ins.ok .ic{background:rgba(34,197,94,.14);color:var(--accent)}
+
+  /* ---------- table ---------- */
+  .tbl-wrap{overflow-x:auto;margin:0 -16px -15px;padding:0 16px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;min-width:840px}
+  th{
+    text-align:left;font-weight:500;font-size:11px;color:var(--muted-2);
+    text-transform:uppercase;letter-spacing:.06em;padding:10px 12px;
+    border-bottom:1px solid var(--border);white-space:nowrap;
+    position:sticky;top:0;background:var(--card);
+  }
+  th.r,td.r{text-align:right}
+  td{padding:11px 12px;border-bottom:1px solid rgba(148,163,184,.08);white-space:nowrap}
+  tbody tr{transition:background .15s ease;cursor:pointer}
+  tbody tr:hover{background:rgba(129,140,248,.07)}
+  tbody tr:last-child td{border-bottom:0}
+  td .m{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+  td .tok{font-family:var(--font-mono);font-size:11.5px;color:var(--muted)}
+
+  /* ---------- footer ---------- */
+  .foot{margin-top:26px;border-top:1px solid var(--border);padding-top:16px}
+  .foot h4{margin:0 0 9px;font-size:11.5px;color:var(--muted);font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+  .caliber{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:7px 22px}
+  .caliber div{font-size:11.5px;color:var(--muted-2);line-height:1.6}
+  .caliber b{color:var(--muted);font-weight:500}
+  .disc{margin-top:14px;font-size:11px;color:var(--muted-2)}
+
+  @media (max-width:1180px){
+    .kpi-row{grid-template-columns:1fr 1fr 1fr}
+    .card.star{grid-column:span 3}
+    .g-2-1,.g-2{grid-template-columns:1fr}
+  }
+  @media (max-width:720px){
+    .wrap{padding:0 14px 40px}
+    .topbar-in{padding:12px 14px}
+    .kpi-row{grid-template-columns:1fr 1fr}
+    .card.star{grid-column:span 2}
+    .brand-txt{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-in">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+        </svg>
+      </div>
+      <div class="brand-txt">
+        <b>Token 消耗看板</b>
+        <span>token-usage-metering</span>
+      </div>
+    </div>
+
+    <span class="chip demo" title="本页面为设计原型，所有数字均为虚构示例数据">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+      示例数据 · 非真实用量
+    </span>
+
+    <div class="seg" role="group" aria-label="统计区间">
+      <button type="button" data-range="7" aria-pressed="false">7 天</button>
+      <button type="button" data-range="30" aria-pressed="true">30 天</button>
+      <button type="button" data-range="90" aria-pressed="false">90 天</button>
+    </div>
+
+    <button class="icon-btn" type="button" id="btn-refresh" title="手动刷新采集数据">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
+      刷新
+    </button>
+    <button class="icon-btn" type="button" title="导出明细 CSV">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
+      导出
+    </button>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <!-- ============ KPI 区（北极星 + 4 张一级指标，共 5 张） ============ -->
+  <section aria-label="核心指标">
+    <div class="kpi-row">
+
+      <div class="card star">
+        <div class="kpi-label">
+          本月累计成本
+          <span class="tag danger" id="forecast-tag">超支预警</span>
+        </div>
+        <div class="kpi-value" id="mtd-cost">$0.00 <span class="unit">/ $300 预算</span></div>
+        <div class="kpi-meta">
+          预算已用 <b class="num wn" id="mtd-pct">0%</b> · 时间进度 <b class="num" id="time-pct">0%</b>
+        </div>
+        <div class="bar">
+          <i id="mtd-bar" style="width:0%"></i>
+          <span class="time" id="time-mark" style="left:0%"></span>
+        </div>
+        <div class="kpi-foot">
+          月末预测 <b class="num wn" id="forecast">$0</b> · <span id="forecast-note">按本月日均线性外推</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="kpi-label">今日成本 <span class="tag neutral" id="today-tag">—</span></div>
+        <div class="kpi-value" id="today-cost">$0.00</div>
+        <div class="kpi-meta" id="today-meta">对比近 7 日均值</div>
+        <div class="chart" style="margin-top:8px"><div id="spark-cost"></div></div>
+      </div>
+
+      <div class="card">
+        <div class="kpi-label">Token 总量</div>
+        <div class="kpi-value" id="tok-total">0</div>
+        <div class="kpi-meta" id="tok-meta">输入 / 输出 / 缓存读 / 缓存写</div>
+        <div class="stack-mini">
+          <span id="tk-in" style="width:21.8%;background:var(--c1)"></span>
+          <span id="tk-out" style="width:8.1%;background:var(--c2)"></span>
+          <span id="tk-cr" style="width:62.8%;background:var(--c3)"></span>
+          <span id="tk-cw" style="width:7.3%;background:var(--c4)"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="kpi-label">缓存命中率 <span class="tag ok">已省 $31.97</span></div>
+        <div class="kpi-value" id="hit-rate">0%</div>
+        <div class="kpi-meta">缓存读 ÷（缓存读 + 全新输入）</div>
+        <div class="chart" style="margin-top:8px"><div id="spark-hit"></div></div>
+      </div>
+
+      <div class="card">
+        <div class="kpi-label">单请求平均成本</div>
+        <div class="kpi-value" id="per-req">$0.0000</div>
+        <div class="kpi-meta"><span id="req-count">0</span> 次请求 · 单位经济学</div>
+        <div class="chart" style="margin-top:8px"><div id="spark-req"></div></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ 趋势区 ============ -->
+  <section aria-label="成本趋势">
+    <div class="sec-head">
+      <h2>成本趋势</h2>
+      <span class="hint" id="trend-hint">近 30 天 · 日粒度</span>
+    </div>
+    <div class="card">
+      <div class="card-h">
+        <h3>每日成本</h3>
+        <span class="sub">USD / 天</span>
+      </div>
+      <div class="chart">
+        <div id="chart-trend"></div>
+        <div class="tip" id="tip-trend"></div>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--c1)"></i>日成本</span>
+        <span><i style="background:var(--warn)"></i>日预算基准线 $9.68</span>
+        <span><i style="background:var(--muted-2)"></i>7 日移动均值</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 构成区 ============ -->
+  <section aria-label="成本构成">
+    <div class="sec-head">
+      <h2>成本构成</h2>
+      <span class="hint" id="mix-hint">近 30 天</span>
+    </div>
+    <div class="g-2">
+      <div class="card">
+        <div class="card-h"><h3>按模型</h3><span class="sub" id="mix-model-total">—</span></div>
+        <div id="mix-model"></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h3>按项目</h3><span class="sub" id="mix-proj-total">—</span></div>
+        <div id="mix-proj"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ Token 分层 ============ -->
+  <section aria-label="Token 分层">
+    <div class="sec-head">
+      <h2>Token 分层消耗</h2>
+      <span class="hint">近 14 天 · 堆叠 · 输入 / 输出 / 缓存读 / 缓存写</span>
+    </div>
+    <div class="card">
+      <div class="chart">
+        <div id="chart-tokens"></div>
+        <div class="tip" id="tip-tokens"></div>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--c1)"></i>输入 Input</span>
+        <span><i style="background:var(--c2)"></i>输出 Output</span>
+        <span><i style="background:var(--c3)"></i>缓存读 Cache Read</span>
+        <span><i style="background:var(--c4)"></i>缓存写 Cache Write</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 洞察区 ============ -->
+  <section aria-label="异常与优化洞察">
+    <div class="sec-head">
+      <h2>异常与优化洞察</h2>
+      <span class="hint">看完知道下一步该做什么</span>
+    </div>
+    <div class="g-2">
+      <div class="ins danger">
+        <div class="ic" aria-hidden="true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+        </div>
+        <div>
+          <h4>烧钱速率异常 · 过去 2 小时 $6.40</h4>
+          <p>为滚动均值 $1.85 的 <b class="num">3.5×</b>，且集中在 web-app 同一会话（<span class="num">sess_8f2a</span>）。疑似 agent 推理循环。</p>
+          <button class="act" type="button">查看该会话 →</button>
+        </div>
+      </div>
+
+      <div class="ins warn">
+        <div class="ic" aria-hidden="true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z"/></svg>
+        </div>
+        <div>
+          <h4>大模型小任务 · 127 次调用可降级</h4>
+          <p>Opus 4.1 中 <b class="num">127</b> 次调用输出不足 200 token，属于结构性浪费。改用 Sonnet 4.5 预计每月节省 <b class="num">$9.4</b>。</p>
+          <button class="act" type="button">查看降级建议 →</button>
+        </div>
+      </div>
+
+      <div class="ins ok">
+        <div class="ic" aria-hidden="true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+        </div>
+        <div>
+          <h4>缓存效果良好 · 命中率 74.2%</h4>
+          <p>缓存读 <b class="num">9.87M</b> token，若按全新输入计价需多付 <b class="num">$31.97</b>，当前实际仅付 $3.55。</p>
+          <button class="act" type="button">查看缓存明细 →</button>
+        </div>
+      </div>
+
+      <div class="ins warn">
+        <div class="ic" aria-hidden="true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 3v9h9"/></svg>
+        </div>
+        <div>
+          <h4>失败请求成本 · $4.12</h4>
+          <p>占本月成本 <b class="num">3.1%</b>，其中 62% 来自超时重试。建议对长上下文请求加超时上限与指数退避。</p>
+          <button class="act" type="button">查看失败请求 →</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 明细区 ============ -->
+  <section aria-label="请求明细">
+    <div class="sec-head">
+      <h2>请求明细</h2>
+      <span class="hint">最近 6 条 · 点击行可下钻到完整调用链</span>
+    </div>
+    <div class="card">
+      <div class="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th><th>项目</th><th>工具</th><th>模型</th>
+              <th class="r">输入</th><th class="r">输出</th><th class="r">缓存读</th>
+              <th class="r">成本</th><th>状态</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 口径说明 ============ -->
+  <footer class="foot">
+    <h4>指标口径说明</h4>
+    <div class="caliber">
+      <div><b>成本归属时刻</b>：按请求实际发生时刻计入，与账单出账日无关，因此与厂商账单可能存在跨日差异。</div>
+      <div><b>统计时区</b>：本地时区（UTC+8），自然日 00:00–24:00。</div>
+      <div><b>成本来源优先级</b>：① 厂商返回的 usage.cost ② 内置价格表 × token 数。两者不一致时以 ① 为准，并在明细中标记 cost_source。</div>
+      <div><b>币种</b>：USD 为基准币种，切换 CNY 时使用当日汇率并标注汇率日期。</div>
+      <div><b>缓存命中率</b>：缓存读 token ÷（缓存读 token + 全新输入 token）；缓存写不计入分母。</div>
+      <div><b>缓存节省</b>：缓存读 token ×（输入单价 − 缓存读单价），按各模型单价分别计算后求和。</div>
+      <div><b>单请求平均成本</b>：区间总成本 ÷ 区间成功 + 失败请求总数（含失败请求）。</div>
+      <div><b>月末预测</b>：本月日均成本 × 当月自然日天数，属粗略线性外推，仅供参考。</div>
+      <div><b>去重规则</b>：同一请求的流式写入按 request_id 去重，仅保留 output_tokens 最大的一条，避免重复计数。</div>
+      <div><b>数据边界</b>：仅采集 token 计数、模型、时间与成本字段，不读取、不存储任何 prompt / 回答正文。</div>
+    </div>
+    <p class="disc">
+      本页面为产品设计原型，全部数字均为虚构示例数据，不代表任何真实用量。设计参考对象包括 llmcost、TokenBurn、tokentop、token-dashboard、ai-usage-dashboard、TOKEN-METER、llm.report、LiteLLM 及 Langfuse / Helicone / OpenLLMetry 等开源项目的公开说明（仅借鉴通用信息架构与功能模式，未复制其界面、文案或代码）。
+    </p>
+  </footer>
+
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ================= 数据（虚构示例） ================= */
+  // 最近 30 天逐日成本（USD），最后一项 = 今日 2026-10-09
+  var RECENT = [
+    5.20,4.85,5.60,3.10,2.40,6.15,6.80,7.20,6.95,4.10,
+    3.05,8.40,9.10,8.75,10.30,7.60,5.20,11.40,12.05,11.20,
+    13.60,12.80,8.90,6.40,15.20,16.10,14.80,17.90,18.60,23.18
+  ];
+  // 更早 60 天：确定性伪随机（种子固定，刷新不跳变）
+  function seeded(seed){var s=seed>>>0;return function(){s=(s*1664525+1013904223)>>>0;return s/4294967296;};}
+  var rnd = seeded(20261009), HIST = [];
+  for (var i=0;i<60;i++){
+    var trend = 3.1 + i*0.048;
+    var jit = 0.72 + rnd()*0.58;
+    var wk = (i%7===3||i%7===4) ? 0.46 : 1;
+    HIST.push(Math.round(trend*jit*wk*100)/100);
+  }
+  var DAILY = HIST.concat(RECENT);            // 90 天，index 89 = 今天
+  var N = DAILY.length;
+  var MTD_START = N - 9;                      // 本月 1 日（10-01）对应下标
+
+  // 口径常量
+  var BUDGET_MONTH = 300;
+  var DAYS_IN_MONTH = 31;
+  var DAYS_ELAPSED = 9;
+  var BLENDED = 8.52;                         // 综合 $/1M token（用于反推 token 量）
+  var SPLIT = {inP:0.218, out:0.081, cr:0.628, cw:0.073};
+  var PRICE_IN = 3.60, PRICE_CR = 0.36;       // $/1M token
+  var REQUESTS_MTD = 3245;                    // 本月请求数
+  var MODEL_SHARE = [
+    {n:"Claude Sonnet 4.5", s:0.4571, c:"var(--c1)"},
+    {n:"GPT-5",             s:0.2188, c:"var(--c2)"},
+    {n:"Claude Opus 4.1",   s:0.1598, c:"var(--c3)"},
+    {n:"Gemini 2.5 Pro",    s:0.0978, c:"var(--c4)"},
+    {n:"DeepSeek V3",       s:0.0663, c:"var(--c5)"}
+  ];
+  var PROJ_SHARE = [
+    {n:"web-app",                s:0.3895, c:"var(--c1)"},
+    {n:"Token-Usage-Metering",   s:0.2555, c:"var(--c2)"},
+    {n:"data-pipeline",          s:0.2047, c:"var(--c3)"},
+    {n:"docs-site",              s:0.1504, c:"var(--c4)"}
+  ];
+
+  /* ================= 工具函数 ================= */
+  function usd(n,d){ d = (d===undefined)?2:d; return "$" + n.toFixed(d); }
+  function usdK(n){ return n>=1000 ? "$"+(n/1000).toFixed(2)+"k" : usd(n); }
+  function mTok(n){
+    if(n>=1e6) return (n/1e6).toFixed(2)+"M";
+    if(n>=1e3) return (n/1e3).toFixed(1)+"K";
+    return String(Math.round(n));
+  }
+  function pct(n,d){ d=(d===undefined)?1:d; return (n*100).toFixed(d)+"%"; }
+  function sum(a){ var t=0; for(var i=0;i<a.length;i++) t+=a[i]; return t; }
+  function el(id){ return document.getElementById(id); }
+  function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+  function niceMax(v){
+    if(v<=0) return 1;
+    var mag = Math.pow(10, Math.floor(Math.log(v)/Math.LN10));
+    var f = v/mag;
+    var step = f<=1?1:f<=2?2:f<=2.5?2.5:f<=5?5:10;
+    return step*mag;
+  }
+
+  /* ================= 全局状态 ================= */
+  var RANGE = 30;
+  var MSEL = null, PSEL = null;   // 模型 / 项目 悬停选中
+
+  function rangeSlice(){ return DAILY.slice(N-RANGE); }
+  function rangeCost(){ return sum(rangeSlice()); }
+
+  /* ================= KPI ================= */
+  function renderKPI(){
+    var mtd = sum(DAILY.slice(MTD_START));
+    var mtdPct = mtd / BUDGET_MONTH;
+    var timePct = DAYS_ELAPSED / DAYS_IN_MONTH;
+    var forecast = mtd / DAYS_ELAPSED * DAYS_IN_MONTH;
+
+    el("mtd-cost").innerHTML = usd(mtd) + ' <span class="unit">/ ' + usd(BUDGET_MONTH,0) + ' 预算</span>';
+    el("mtd-pct").textContent = pct(mtdPct,1);
+    el("time-pct").textContent = pct(timePct,0);
+    el("mtd-bar").style.width = Math.min(100, mtdPct*100) + "%";
+    el("time-mark").style.left = (timePct*100) + "%";
+    el("forecast").textContent = usd(forecast,0);
+    el("forecast-note").textContent = "按本月日均线性外推 · 超预算 " + usd(forecast-BUDGET_MONTH,0);
+    el("forecast-tag").className = "tag " + (forecast>BUDGET_MONTH ? "danger":"ok");
+    el("forecast-tag").textContent = forecast>BUDGET_MONTH ? "超支预警" : "预算内";
+
+    // 今日
+    var today = DAILY[N-1];
+    var last7 = DAILY.slice(N-7);
+    var avg7 = sum(last7)/last7.length;
+    var delta = today/avg7 - 1;
+    el("today-cost").textContent = usd(today);
+    el("today-tag").className = "tag " + (delta>0.2?"warn":"neutral");
+    el("today-tag").textContent = (delta>0?"+":"") + pct(delta,1);
+    el("today-meta").innerHTML = '对比近 7 日均值 <b class="num">' + usd(avg7) + '</b>';
+
+    // Token
+    var tok = mtd / BLENDED * 1e6;
+    el("tok-total").textContent = mTok(tok);
+    el("tok-meta").innerHTML =
+      '输入 <b class="num">'+mTok(tok*SPLIT.inP)+'</b> · 输出 <b class="num">'+mTok(tok*SPLIT.out)+
+      '</b> · 缓存读 <b class="num">'+mTok(tok*SPLIT.cr)+'</b> · 缓存写 <b class="num">'+mTok(tok*SPLIT.cw)+'</b>';
+    el("tk-in").style.width = pct(SPLIT.inP,1);
+    el("tk-out").style.width = pct(SPLIT.out,1);
+    el("tk-cr").style.width = pct(SPLIT.cr,1);
+    el("tk-cw").style.width = pct(SPLIT.cw,1);
+
+    // 缓存
+    var cr = tok*SPLIT.cr, inTok = tok*SPLIT.inP;
+    var hit = cr/(cr+inTok);
+    var saved = cr/1e6*(PRICE_IN-PRICE_CR);
+    el("hit-rate").textContent = pct(hit,1);
+    var hitTag = el("hit-rate").parentNode.querySelector(".tag");
+    if(hitTag){ hitTag.textContent = "已省 " + usd(saved); hitTag.title = "按各模型输入单价与缓存读单价差额计算"; }
+
+    // 单请求
+    var reqs = Math.round(REQUESTS_MTD);
+    el("per-req").textContent = usd(mtd/reqs,4);
+    el("req-count").textContent = reqs.toLocaleString("en-US");
+
+    // sparkline
+    var s14 = smooth(DAILY.slice(N-90),14).slice(-14);
+    var smx = Math.max.apply(null, s14) || 1;
+    spark("spark-cost", DAILY.slice(N-14), "var(--c1)");
+    spark("spark-hit", s14.map(function(v){ return 66 + (v/smx)*9; }), "var(--accent)");
+    spark("spark-req", smooth(DAILY.slice(N-30),7).slice(-14), "var(--c2)");
+  }
+  function smooth(a,w){
+    var r=[];
+    for(var i=0;i<a.length;i++){
+      var s=Math.max(0,i-w+1);
+      r.push(sum(a.slice(s,i+1))/(i-s+1));
+    }
+    return r;
+  }
+  function spark(id, data, color){
+    var w=140,h=30,p=2;
+    var mx=niceMax(Math.max.apply(null,data));
+    var mn=Math.min.apply(null,data);
+    var rng=(mx-mn)||1;
+    var pts=data.map(function(v,i){
+      var x=p+(w-2*p)*(i/(data.length-1||1));
+      var y=h-p-(h-2*p)*((v-mn)/rng);
+      return [x,y];
+    });
+    var d="M"+pts.map(function(q){return q[0].toFixed(2)+" "+q[1].toFixed(2);}).join(" L");
+    var area=d+" L "+(w-p)+" "+(h-p)+" L "+p+" "+(h-p)+" Z";
+    var gid="sg"+id;
+    el(id).innerHTML =
+      '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" style="height:'+h+'px" aria-hidden="true">'+
+        '<defs><linearGradient id="'+gid+'" x1="0" y1="0" x2="0" y2="1">'+
+          '<stop offset="0%" stop-color="'+color+'" stop-opacity=".34"/>'+
+          '<stop offset="100%" stop-color="'+color+'" stop-opacity="0"/>'+
+        '</linearGradient></defs>'+
+        '<path d="'+area+'" fill="url(#'+gid+')"/>'+
+        '<path d="'+d+'" fill="none" stroke="'+color+'" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>'+
+        '<circle cx="'+pts[pts.length-1][0].toFixed(2)+'" cy="'+pts[pts.length-1][1].toFixed(2)+'" r="2.2" fill="'+color+'"/>'+
+      '</svg>';
+  }
+
+  /* ================= 趋势折线 ================= */
+  function renderTrend(){
+    var data = rangeSlice();
+    var W=1000,H=280,PL=54,PR=14,PT=16,PB=30;
+    var iw=W-PL-PR, ih=H-PT-PB;
+    var mx = niceMax(Math.max(Math.max.apply(null,data), 9.68));
+    var base = BUDGET_MONTH/DAYS_IN_MONTH;
+    var X=function(i){ return PL + (data.length>1 ? iw*(i/(data.length-1)) : iw/2); };
+    var Y=function(v){ return PT + ih*(1 - v/mx); };
+
+    var line = data.map(function(v,i){return (i?"L":"M")+X(i).toFixed(1)+" "+Y(v).toFixed(1);}).join(" ");
+    var area = line + " L"+X(data.length-1).toFixed(1)+" "+(PT+ih)+" L"+X(0).toFixed(1)+" "+(PT+ih)+" Z";
+
+    // 7 日移动均值
+    var mv=[],run=[];
+    for(var i=0;i<data.length;i++){ run.push(data[i]); if(run.length>7) run.shift(); mv.push(sum(run)/run.length); }
+    var mvLine = mv.map(function(v,i){return (i?"L":"M")+X(i).toFixed(1)+" "+Y(v).toFixed(1);}).join(" ");
+
+    var s="";
+    s += '<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="每日成本趋势折线图">';
+    s += '<defs><linearGradient id="tg" x1="0" y1="0" x2="0" y2="1">'+
+           '<stop offset="0%" stop-color="#818CF8" stop-opacity=".30"/>'+
+           '<stop offset="100%" stop-color="#818CF8" stop-opacity="0"/></linearGradient></defs>';
+
+    // 网格 + Y 轴
+    var ticks=4;
+    for(var t=0;t<=ticks;t++){
+      var v = mx*t/ticks, y=Y(v);
+      s += '<line x1="'+PL+'" y1="'+y.toFixed(1)+'" x2="'+(W-PR)+'" y2="'+y.toFixed(1)+'" stroke="rgba(148,163,184,.13)" stroke-width="1"/>';
+      s += '<text x="'+(PL-10)+'" y="'+(y+4).toFixed(1)+'" fill="#64748B" font-size="11" font-family="Fira Code,monospace" text-anchor="end">$'+v.toFixed(0)+'</text>';
+    }
+    // 面积 + 折线
+    s += '<path d="'+area+'" fill="url(#tg)"/>';
+    s += '<path d="'+mvLine+'" fill="none" stroke="#64748B" stroke-width="1.3" stroke-dasharray="2 4" stroke-linejoin="round"/>';
+    // 预算基准线
+    s += '<line x1="'+PL+'" y1="'+Y(base).toFixed(1)+'" x2="'+(W-PR)+'" y2="'+Y(base).toFixed(1)+'" stroke="#F59E0B" stroke-width="1.4" stroke-dasharray="6 5"/>';
+    s += '<text x="'+(W-PR-2)+'" y="'+(Y(base)-7).toFixed(1)+'" fill="#F59E0B" font-size="10.5" font-family="Fira Code,monospace" text-anchor="end">日预算 $'+base.toFixed(2)+'</text>';
+    s += '<path d="'+line+'" fill="none" stroke="#818CF8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+
+    // 超预算点高亮
+    data.forEach(function(v,i){
+      if(v>base){
+        s += '<circle cx="'+X(i).toFixed(1)+'" cy="'+Y(v).toFixed(1)+'" r="3" fill="#1B2336" stroke="#F59E0B" stroke-width="1.8"/>';
+      }
+    });
+    // 末点
+    s += '<circle cx="'+X(data.length-1).toFixed(1)+'" cy="'+Y(data[data.length-1]).toFixed(1)+'" r="4.2" fill="#818CF8" stroke="#0F172A" stroke-width="2"/>';
+    // 日期轴
+    var lbl=Math.min(6,data.length);
+    for(var k=0;k<lbl;k++){
+      var idx=Math.round(k*(data.length-1)/(lbl-1||1));
+      var daysAgo=data.length-1-idx;
+      var txt = daysAgo===0 ? "今天" : ("-"+daysAgo+"d");
+      s += '<text x="'+X(idx).toFixed(1)+'" y="'+(H-9)+'" fill="#64748B" font-size="10.5" font-family="Fira Code,monospace" text-anchor="'+(k===0?"start":k===lbl-1?"end":"middle")+'">'+txt+'</text>';
+    }
+    // 悬停热区
+    data.forEach(function(v,i){
+      var bw=iw/Math.max(1,data.length);
+      s += '<rect x="'+(X(i)-bw/2).toFixed(1)+'" y="'+PT+'" width="'+bw.toFixed(1)+'" height="'+ih+'" fill="transparent" data-i="'+i+'"/>';
+    });
+    s += '</svg>';
+    el("chart-trend").innerHTML = s;
+
+    // tooltip
+    var tip=el("tip-trend"), wrap=el("chart-trend").parentNode;
+    el("chart-trend").querySelectorAll("rect[data-i]").forEach(function(r){
+      r.addEventListener("mouseenter", function(){
+        var i=+r.getAttribute("data-i");
+        var daysAgo=data.length-1-i;
+        tip.innerHTML = '<div class="t-dim">'+(daysAgo===0?"今天":"前 "+daysAgo+" 天")+'</div>'+
+                        '日成本 <b>'+usd(data[i])+'</b><br>'+
+                        '<span class="t-dim">7 日均值 </span><b>'+usd(mv[i])+'</b>'+
+                        (data[i]>base?'<br><span style="color:#F59E0B">超出日预算 '+usd(data[i]-base)+'</span>':'');
+        var box=wrap.getBoundingClientRect();
+        var rx=r.getBoundingClientRect();
+        tip.style.opacity="1";
+        tip.style.left=Math.max(4,Math.min(box.width-tip.offsetWidth-4, rx.left-box.left+rx.width/2))+"px";
+        tip.style.top="6px";
+      });
+      r.addEventListener("mouseleave", function(){ tip.style.opacity="0"; });
+    });
+
+    el("trend-hint").textContent = "近 " + RANGE + " 天 · 日粒度 · 区间合计 " + usd(rangeCost());
+  }
+
+  /* ================= Token 堆叠柱 ================= */
+  function renderTokens(){
+    var days = Math.min(14, RANGE);
+    var data = DAILY.slice(N-days);
+    var W=1000,H=250,PL=54,PR=14,PT=14,PB=28;
+    var iw=W-PL-PR, ih=H-PT-PB;
+    var perDay = data.map(function(v){ return v/BLENDED*1e6/1e3; }); // 单位 K token
+    var mx = niceMax(Math.max.apply(null, perDay));
+    var bw = Math.min(34, iw/data.length*0.62);
+    var X=function(i){ return PL + iw*(i+0.5)/data.length; };
+    var Y=function(v){ return PT + ih*(1-v/mx); };
+    var keys=[["inP","var(--c1)"],["out","var(--c2)"],["cr","var(--c3)"],["cw","var(--c4)"]];
+
+    var s='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="Token 分层堆叠柱状图">';
+    for(var t=0;t<=4;t++){
+      var v=mx*t/4,y=Y(v);
+      s+='<line x1="'+PL+'" y1="'+y.toFixed(1)+'" x2="'+(W-PR)+'" y2="'+y.toFixed(1)+'" stroke="rgba(148,163,184,.13)"/>';
+      s+='<text x="'+(PL-10)+'" y="'+(y+4).toFixed(1)+'" fill="#64748B" font-size="11" font-family="Fira Code,monospace" text-anchor="end">'+(v>=1000?(v/1000).toFixed(1)+"M":v.toFixed(0)+"K")+'</text>';
+    }
+    data.forEach(function(v,i){
+      var total=perDay[i], acc=0;
+      keys.forEach(function(k){
+        var val=total*SPLIT[k[0]];
+        var y0=Y(acc+val), y1=Y(acc);
+        s+='<rect x="'+(X(i)-bw/2).toFixed(1)+'" y="'+y0.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+Math.max(0.8,(y1-y0)).toFixed(1)+'" fill="'+k[1]+'" rx="1.5"/>';
+        acc+=val;
+      });
+      s+='<rect x="'+(X(i)-bw/2).toFixed(1)+'" y="'+(PT)+'" width="'+bw.toFixed(1)+'" height="'+ih+'" fill="transparent" data-ti="'+i+'"/>';
+      if(i%Math.ceil(data.length/7)===0 || i===data.length-1){
+        var da=days-1-i;
+        s+='<text x="'+X(i).toFixed(1)+'" y="'+(H-8)+'" fill="#64748B" font-size="10.5" font-family="Fira Code,monospace" text-anchor="middle">'+(da===0?"今天":"-"+da+"d")+'</text>';
+      }
+    });
+    s+='</svg>';
+    el("chart-tokens").innerHTML=s;
+
+    var tip=el("tip-tokens"), wrap=el("chart-tokens").parentNode;
+    el("chart-tokens").querySelectorAll("rect[data-ti]").forEach(function(r){
+      r.addEventListener("mouseenter", function(){
+        var i=+r.getAttribute("data-ti"), tot=perDay[i]*1000, da=days-1-i;
+        tip.innerHTML='<div class="t-dim">'+(da===0?"今天":"前 "+da+" 天")+'</div>'+
+          '合计 <b>'+mTok(tot)+'</b> token<br>'+
+          '<span class="t-dim">输入</span> <b>'+mTok(tot*SPLIT.inP)+'</b> · <span class="t-dim">输出</span> <b>'+mTok(tot*SPLIT.out)+'</b><br>'+
+          '<span class="t-dim">缓存读</span> <b>'+mTok(tot*SPLIT.cr)+'</b> · <span class="t-dim">缓存写</span> <b>'+mTok(tot*SPLIT.cw)+'</b>';
+        var box=wrap.getBoundingClientRect(), rx=r.getBoundingClientRect();
+        tip.style.opacity="1";
+        tip.style.left=Math.max(4,Math.min(box.width-tip.offsetWidth-4, rx.left-box.left+rx.width/2))+"px";
+        tip.style.top="6px";
+      });
+      r.addEventListener("mouseleave", function(){ tip.style.opacity="0"; });
+    });
+  }
+
+  /* ================= 构成区 ================= */
+  function renderMix(){
+    var total = rangeCost();
+    el("mix-hint").textContent = "近 " + RANGE + " 天 · 区间合计 " + usd(total);
+    el("mix-model-total").textContent = usd(total);
+    el("mix-proj-total").textContent = usd(total);
+    el("mix-model").innerHTML = mixRows(MODEL_SHARE, total, "m");
+    el("mix-proj").innerHTML  = mixRows(PROJ_SHARE, total, "p");
+    bindMix();
+  }
+  function mixRows(list,total,kind){
+    var ssum=sum(list.map(function(x){return x.s;}));
+    return list.map(function(x,i){
+      var v=total*x.s/ssum, share=x.s/ssum;
+      return '<div class="brow" data-'+kind+'="'+i+'">'+
+        '<div class="nm"><span class="dot" style="background:'+x.c+'"></span>'+esc(x.n)+
+          '<em>'+pct(share,1)+'</em></div>'+
+        '<div class="vl">'+usd(v)+'</div>'+
+        '<div class="track"><i style="width:'+pct(share,1)+';background:'+x.c+'"></i></div>'+
+      '</div>';
+    }).join("");
+  }
+  function bindMix(){
+    document.querySelectorAll("[data-m]").forEach(function(r){
+      r.addEventListener("mouseenter", function(){ MSEL=+r.getAttribute("data-m"); highlight(); });
+    });
+    document.querySelectorAll("[data-p]").forEach(function(r){
+      r.addEventListener("mouseenter", function(){ PSEL=+r.getAttribute("data-p"); highlight(); });
+    });
+    document.querySelectorAll("[data-m],[data-p]").forEach(function(r){
+      r.addEventListener("mouseleave", function(){ MSEL=null; PSEL=null; highlight(); });
+    });
+  }
+  function highlight(){
+    document.querySelectorAll("[data-m]").forEach(function(r){
+      r.style.opacity = (MSEL===null || MSEL===+r.getAttribute("data-m")) ? "1" : ".42";
+    });
+    document.querySelectorAll("[data-p]").forEach(function(r){
+      r.style.opacity = (PSEL===null || PSEL===+r.getAttribute("data-p")) ? "1" : ".42";
+    });
+  }
+
+  /* ================= 明细表 ================= */
+  var ROWS = [
+    ["22:47","web-app",             "Claude Code","Claude Sonnet 4.5",12400,3100,88200,0.184,"成功"],
+    ["22:31","web-app",             "Claude Code","Claude Sonnet 4.5",11900,2800,84600,0.171,"成功"],
+    ["22:12","data-pipeline",       "API 直连",   "GPT-5",             6200,1400,0,    0.042,"成功"],
+    ["21:58","Token-Usage-Metering","Cursor",     "Claude Opus 4.1",   9800, 400,42100,0.129,"低效"],
+    ["21:40","docs-site",           "Claude Code","Gemini 2.5 Pro",   4100, 900,0,    0.013,"成功"],
+    ["21:22","web-app",             "Claude Code","Claude Sonnet 4.5", 3300, 200,0,    0.014,"失败"]
+  ];
+  function renderTable(){
+    el("tbody").innerHTML = ROWS.map(function(r){
+      var st=r[8], cls = st==="成功"?"ok":st==="失败"?"danger":"warn";
+      return "<tr>"+
+        '<td class="m">'+r[0]+'</td>'+
+        "<td>"+esc(r[1])+"</td>"+
+        "<td>"+esc(r[2])+"</td>"+
+        "<td>"+esc(r[3])+"</td>"+
+        '<td class="r m">'+mTok(r[4])+'</td>'+
+        '<td class="r m">'+mTok(r[5])+'</td>'+
+        '<td class="r m">'+(r[6]?mTok(r[6]):"—")+'</td>'+
+        '<td class="r m">'+usd(r[7])+'</td>'+
+        '<td><span class="tag '+cls+'">'+st+"</span></td>"+
+      "</tr>";
+    }).join("");
+    // 行点击下钻（渲染后绑定）
+    el("tbody").querySelectorAll("tr").forEach(function(tr){
+      tr.addEventListener("click", function(){
+        tr.style.background="rgba(129,140,248,.16)";
+        setTimeout(function(){ tr.style.background=""; },320);
+      });
+    });
+  }
+
+  /* ================= 交互 ================= */
+  document.querySelectorAll(".seg button").forEach(function(b){
+    b.addEventListener("click", function(){
+      RANGE = +b.getAttribute("data-range");
+      document.querySelectorAll(".seg button").forEach(function(o){
+        o.setAttribute("aria-pressed", String(o===b));
+      });
+      renderTrend(); renderTokens(); renderMix();
+    });
+  });
+  el("btn-refresh").addEventListener("click", function(){
+    var btn=el("btn-refresh");
+    btn.style.color="var(--accent)";
+    setTimeout(function(){ btn.style.color=""; }, 420);
+  });
+
+  /* ================= 启动 ================= */
+  renderKPI();
+  renderTrend();
+  renderTokens();
+  renderMix();
+  renderTable();
+})();
+</script>
+</body>
+</html>

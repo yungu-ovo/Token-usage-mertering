@@ -1,0 +1,1256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token 消耗看板 · Token Usage Metering</title>
+<style>
+  :root{
+    --bg:#0F172A;
+    --bg-grad-1:rgba(129,140,248,.10);
+    --bg-grad-2:rgba(34,211,238,.07);
+    --card:#1B2336;
+    --card-2:#161E2F;
+    --fg:#F8FAFC;
+    --muted:#94A3B8;
+    --muted-2:#64748B;
+    --border:rgba(148,163,184,.16);
+    --border-strong:rgba(148,163,184,.30);
+    --accent:#22C55E;
+    --warn:#F59E0B;
+    --danger:#EF4444;
+    --c1:#818CF8;
+    --c2:#22D3EE;
+    --c3:#FBBF24;
+    --c4:#F472B6;
+    --c5:#A3E635;
+    --radius:14px;
+    --font-sans:'Fira Sans',-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC','Microsoft YaHei',sans-serif;
+    --font-mono:'Fira Code','SFMono-Regular',Consolas,'Liberation Mono',monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg);
+    background-image:
+      radial-gradient(900px 500px at 12% -8%, var(--bg-grad-1), transparent 62%),
+      radial-gradient(760px 420px at 92% 4%, var(--bg-grad-2), transparent 60%);
+    background-attachment:fixed;
+    color:var(--fg);
+    font-family:var(--font-sans);
+    font-size:14px;
+    line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+  .num{font-family:var(--font-mono);font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+  .wrap{max-width:1420px;margin:0 auto;padding:0 24px 56px}
+
+  /* ---------- topbar ---------- */
+  .topbar{
+    position:sticky;top:0;z-index:50;
+    backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+    background:rgba(15,23,42,.74);
+    border-bottom:1px solid var(--border);
+  }
+  .topbar-in{
+    max-width:1420px;margin:0 auto;padding:14px 24px;
+    display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+  }
+  .brand{display:flex;align-items:center;gap:10px;margin-right:auto}
+  .brand-mark{
+    width:32px;height:32px;border-radius:9px;display:grid;place-items:center;
+    background:linear-gradient(145deg,rgba(129,140,248,.28),rgba(34,211,238,.18));
+    border:1px solid var(--border-strong);color:var(--c1);flex:none;
+  }
+  .brand-txt b{display:block;font-size:14px;font-weight:600;letter-spacing:.01em}
+  .brand-txt span{display:block;font-size:11.5px;color:var(--muted-2);font-family:var(--font-mono)}
+  .chip{
+    display:inline-flex;align-items:center;gap:6px;
+    font-size:11.5px;font-weight:500;padding:4px 9px;border-radius:999px;
+    border:1px solid var(--border-strong);color:var(--muted);background:rgba(255,255,255,.03);
+  }
+  .chip.demo{color:var(--warn);border-color:rgba(245,158,11,.38);background:rgba(245,158,11,.10)}
+  .seg{display:flex;gap:2px;padding:3px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--border)}
+  .seg button{
+    appearance:none;border:0;background:transparent;color:var(--muted);
+    font-family:var(--font-mono);font-size:12px;font-weight:500;
+    padding:5px 12px;border-radius:7px;cursor:pointer;transition:all .18s ease;
+  }
+  .seg button:hover{color:var(--fg);background:rgba(255,255,255,.05)}
+  .seg button[aria-pressed="true"]{background:rgba(129,140,248,.20);color:#C7D2FE;box-shadow:inset 0 0 0 1px rgba(129,140,248,.35)}
+  .icon-btn{
+    appearance:none;display:inline-flex;align-items:center;gap:7px;cursor:pointer;
+    background:rgba(255,255,255,.04);border:1px solid var(--border);color:var(--muted);
+    font-family:var(--font-sans);font-size:12.5px;padding:7px 12px;border-radius:9px;
+    transition:all .18s ease;min-height:34px;
+  }
+  .icon-btn:hover{color:var(--fg);border-color:var(--border-strong);background:rgba(255,255,255,.07)}
+  :focus-visible{outline:2px solid var(--c1);outline-offset:2px;border-radius:6px}
+
+  /* ---------- sections ---------- */
+  section{margin-top:26px}
+  .sec-head{display:flex;align-items:baseline;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+  .sec-head h2{margin:0;font-size:14.5px;font-weight:600;letter-spacing:.01em}
+  .sec-head .hint{font-size:12px;color:var(--muted-2);font-family:var(--font-mono)}
+
+  /* ---------- kpi ---------- */
+  .kpi-row{display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr 1fr;gap:14px}
+  .card{
+    background:linear-gradient(180deg,rgba(255,255,255,.038),rgba(255,255,255,.008));
+    background-color:var(--card);
+    border:1px solid var(--border);border-radius:var(--radius);
+    padding:16px 16px 15px;position:relative;overflow:hidden;
+  }
+  .card.star{border-color:rgba(245,158,11,.34);background-color:#1E2333;
+    box-shadow:0 0 0 1px rgba(245,158,11,.08),0 18px 40px -28px rgba(245,158,11,.5)}
+  .card.star::after{content:"";position:absolute;inset:0 0 auto 0;height:2px;
+    background:linear-gradient(90deg,var(--warn),rgba(245,158,11,0))}
+  .kpi-label{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:7px}
+  .kpi-value{
+    font-family:var(--font-mono);font-variant-numeric:tabular-nums;
+    font-size:26px;font-weight:600;letter-spacing:-.035em;margin:8px 0 0;
+  }
+  .kpi-value .unit{font-size:13px;color:var(--muted-2);font-weight:400;letter-spacing:0}
+  .kpi-meta{font-size:11.5px;color:var(--muted-2);margin-top:5px}
+  .kpi-foot{font-size:11.5px;color:var(--muted);margin-top:9px;padding-top:9px;border-top:1px dashed var(--border)}
+  .up{color:var(--danger)}
+  .ok{color:var(--accent)}
+  .wn{color:var(--warn)}
+  .tag{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:600;
+    padding:2px 7px;border-radius:6px;letter-spacing:.02em}
+  .tag.danger{color:#FCA5A5;background:rgba(239,68,68,.14);border:1px solid rgba(239,68,68,.28)}
+  .tag.ok{color:#86EFAC;background:rgba(34,197,94,.13);border:1px solid rgba(34,197,94,.26)}
+  .tag.warn{color:#FCD34D;background:rgba(245,158,11,.13);border:1px solid rgba(245,158,11,.28)}
+  .tag.neutral{color:var(--muted);background:rgba(148,163,184,.10);border:1px solid var(--border)}
+  .bar{height:5px;border-radius:999px;background:rgba(148,163,184,.16);overflow:hidden;margin-top:11px;position:relative}
+  .bar i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#F59E0B,#EF4444)}
+  .bar.time{position:absolute;left:0;top:0;height:100%;width:2px;background:rgba(248,250,252,.55)}
+  .stack-mini{display:flex;height:6px;border-radius:999px;overflow:hidden;margin-top:11px;background:rgba(148,163,184,.14)}
+  .stack-mini span{display:block;height:100%}
+
+  /* ---------- grids ---------- */
+  .g-2-1{display:grid;grid-template-columns:1.62fr 1fr;gap:14px}
+  .g-2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .card-h{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+  .card-h h3{margin:0;font-size:13px;font-weight:600;color:#E2E8F0}
+  .card-h .sub{font-size:11px;color:var(--muted-2);font-family:var(--font-mono);margin-left:auto}
+  .legend{display:flex;flex-wrap:wrap;gap:10px 16px;margin-top:10px}
+  .legend i{width:9px;height:9px;border-radius:3px;display:inline-block;margin-right:6px;vertical-align:-1px}
+  .legend span{font-size:11.5px;color:var(--muted)}
+
+  /* ---------- chart shell ---------- */
+  .chart{position:relative;width:100%}
+  .chart svg{display:block;width:100%;height:auto}
+  .tip{
+    position:absolute;pointer-events:none;opacity:0;transition:opacity .12s ease;
+    background:rgba(10,15,28,.95);border:1px solid var(--border-strong);
+    border-radius:9px;padding:8px 10px;font-size:11.5px;line-height:1.55;
+    box-shadow:0 12px 30px -12px rgba(0,0,0,.8);z-index:20;white-space:nowrap;
+  }
+  .tip b{font-family:var(--font-mono);font-weight:600}
+  .tip .t-dim{color:var(--muted-2)}
+
+  /* ---------- breakdown rows ---------- */
+  .brow{display:grid;grid-template-columns:1fr auto;gap:4px 12px;padding:9px 0;border-bottom:1px solid rgba(148,163,184,.09)}
+  .brow:last-child{border-bottom:0}
+  .brow .nm{font-size:12.5px;display:flex;align-items:center;gap:8px;min-width:0}
+  .brow .nm em{font-style:normal;color:var(--muted-2);font-size:11px;font-family:var(--font-mono);margin-left:auto;flex:none}
+  .brow .vl{font-family:var(--font-mono);font-size:12.5px;text-align:right;flex:none}
+  .brow .track{grid-column:1 / -1;height:6px;border-radius:999px;background:rgba(148,163,184,.12);overflow:hidden}
+  .brow .track i{display:block;height:100%;border-radius:999px}
+  .dot{width:9px;height:9px;border-radius:3px;flex:none}
+
+  /* ---------- insights ---------- */
+  .ins{display:flex;gap:11px;padding:12px 13px;border-radius:11px;border:1px solid var(--border);background:var(--card-2);align-items:flex-start}
+  .ins .ic{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;flex:none}
+  .ins h4{margin:0 0 3px;font-size:12.5px;font-weight:600}
+  .ins p{margin:0;font-size:11.5px;color:var(--muted);line-height:1.55}
+  .ins .act{margin-top:7px;font-size:11.5px;color:var(--c1);cursor:pointer;display:inline-flex;align-items:center;gap:4px;background:none;border:0;padding:0;font-family:inherit}
+  .ins .act:hover{text-decoration:underline}
+  .ins.warn{border-color:rgba(245,158,11,.26);background:linear-gradient(180deg,rgba(245,158,11,.06),rgba(245,158,11,.01))}
+  .ins.danger{border-color:rgba(239,68,68,.26);background:linear-gradient(180deg,rgba(239,68,68,.06),rgba(239,68,68,.01))}
+  .ins.ok{border-color:rgba(34,197,94,.24);background:linear-gradient(180deg,rgba(34,197,94,.06),rgba(34,197,94,.01))}
+  .ins.warn .ic{background:rgba(245,158,11,.14);color:var(--warn)}
+  .ins.danger .ic{background:rgba(239,68,68,.14);color:var(--danger)}
+  .ins.ok .ic{background:rgba(34,197,94,.14);color:var(--accent)}
+
+  /* ---------- table ---------- */
+  .tbl-wrap{overflow-x:auto;margin:0 -16px -15px;padding:0 16px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;min-width:840px}
+  th{
+    text-align:left;font-weight:500;font-size:11px;color:var(--muted-2);
+    text-transform:uppercase;letter-spacing:.06em;padding:10px 12px;
+    border-bottom:1px solid var(--border);white-space:nowrap;
+    position:sticky;top:0;background:var(--card);
+  }
+  th.r,td.r{text-align:right}
+  td{padding:11px 12px;border-bottom:1px solid rgba(148,163,184,.08);white-space:nowrap}
+  tbody tr{transition:background .15s ease;cursor:pointer}
+  tbody tr:hover{background:rgba(129,140,248,.07)}
+  tbody tr:last-child td{border-bottom:0}
+  td .m{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+  td .tok{font-family:var(--font-mono);font-size:11.5px;color:var(--muted)}
+
+  /* ---------- footer ---------- */
+  .foot{margin-top:26px;border-top:1px solid var(--border);padding-top:16px}
+  .foot h4{margin:0 0 9px;font-size:11.5px;color:var(--muted);font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+  .caliber{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:7px 22px}
+  .caliber div{font-size:11.5px;color:var(--muted-2);line-height:1.6}
+  .caliber b{color:var(--muted);font-weight:500}
+  .disc{margin-top:14px;font-size:11px;color:var(--muted-2)}
+
+  /* ---------- 状态：加载 / 空 / 错误 ---------- */
+  .chip.ok{color:#86EFAC;border-color:rgba(34,197,94,.34);background:rgba(34,197,94,.10)}
+  .tbl-foot{font-size:11.5px;color:var(--muted-2);padding-top:11px;margin-top:11px;border-top:1px dashed var(--border);display:flex;gap:14px;flex-wrap:wrap}
+  .tbl-foot b{font-family:var(--font-mono);color:var(--muted)}
+  .empty{
+    display:flex;flex-direction:column;align-items:center;gap:7px;
+    padding:26px 16px;text-align:center;color:var(--muted-2);font-size:12px;
+  }
+  .empty b{color:var(--muted);font-size:12.5px;font-weight:500}
+  .skel{
+    border-radius:8px;background:linear-gradient(90deg,rgba(148,163,184,.10),rgba(148,163,184,.20),rgba(148,163,184,.10));
+    background-size:200% 100%;animation:sk 1.3s ease-in-out infinite;
+  }
+  @keyframes sk{0%{background-position:200% 0}100%{background-position:-200% 0}}
+  .ins.neutral{border-color:var(--border)}
+  .ins.neutral .ic{background:rgba(148,163,184,.12);color:var(--muted)}
+  .banner{
+    margin-top:14px;padding:11px 13px;border-radius:11px;font-size:12px;line-height:1.6;
+    border:1px solid rgba(239,68,68,.30);background:rgba(239,68,68,.08);color:#FCA5A5;
+  }
+  .banner b{color:#FECACA}
+  .banner code{font-family:var(--font-mono);font-size:11.5px;color:#FECACA}
+  .spin{display:inline-block;width:11px;height:11px;border-radius:50%;
+    border:1.6px solid currentColor;border-top-color:transparent;animation:sp .7s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+
+  @media (max-width:1180px){
+    .kpi-row{grid-template-columns:1fr 1fr 1fr}
+    .card.star{grid-column:span 3}
+    .g-2-1,.g-2{grid-template-columns:1fr}
+  }
+  @media (max-width:720px){
+    .wrap{padding:0 14px 40px}
+    .topbar-in{padding:12px 14px}
+    .kpi-row{grid-template-columns:1fr 1fr}
+    .card.star{grid-column:span 2}
+    .brand-txt{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-in">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+        </svg>
+      </div>
+      <div class="brand-txt">
+        <b>Token 消耗看板</b>
+        <span>token-usage-metering</span>
+      </div>
+    </div>
+
+    <span class="chip" id="chip-source" data-source="unknown" title="数据来源">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg>
+      加载中…
+    </span>
+
+    <span class="chip" id="chip-caliber" title="当前成本口径">口径 —</span>
+
+    <span class="chip demo" id="chip-credit" title="积分折算率未校准，厂商口径成本仅供参考" hidden>
+      折算率待校准
+    </span>
+
+    <span class="chip" id="chip-fx" title="汇率日期" hidden>—</span>
+
+    <div class="seg" role="group" aria-label="统计区间">
+      <button type="button" data-range="7" aria-pressed="false">7 天</button>
+      <button type="button" data-range="30" aria-pressed="true">30 天</button>
+      <button type="button" data-range="90" aria-pressed="false">90 天</button>
+    </div>
+
+    <button class="icon-btn" type="button" id="btn-refresh" title="重新采集本机 WorkBuddy 用量并刷新">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
+      刷新
+    </button>
+    <button class="icon-btn" type="button" id="btn-export" title="导出当前区间的明细为 CSV">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
+      导出
+    </button>
+  </div>
+</div>
+<div class="wrap">
+
+  <!-- ============ KPI 区（北极星 + 4 张一级指标，共 5 张） ============ -->
+  <section aria-label="核心指标">
+    <div class="kpi-row">
+
+      <div class="card star">
+        <div class="kpi-label">
+          本月累计成本
+          <span class="tag danger" id="forecast-tag">超支预警</span>
+        </div>
+        <div class="kpi-value" id="mtd-cost">$0.00 <span class="unit">/ $300 预算</span></div>
+        <div class="kpi-meta">
+          预算已用 <b class="num wn" id="mtd-pct">0%</b> · 时间进度 <b class="num" id="time-pct">0%</b>
+        </div>
+        <div class="bar">
+          <i id="mtd-bar" style="width:0%"></i>
+          <span class="time" id="time-mark" style="left:0%"></span>
+        </div>
+        <div class="kpi-foot">
+          月末预测 <b class="num wn" id="forecast">$0</b> · <span id="forecast-note">按本月日均线性外推</span>
+          <br>厂商口径 <b class="num" id="vendor-cost">—</b><span class="wn" id="vendor-note" hidden>折算率待校准</span>
+          · 剩余可支撑 <b class="num" id="runway">—</b> 天
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="kpi-label">今日成本 <span class="tag neutral" id="today-tag">—</span></div>
+        <div class="kpi-value" id="today-cost">$0.00</div>
+        <div class="kpi-meta" id="today-meta">对比近 7 日均值</div>
+        <div class="chart" style="margin-top:8px"><div id="spark-cost"></div></div>
+      </div>
+
+      <div class="card">
+        <div class="kpi-label">Token 总量</div>
+        <div class="kpi-value" id="tok-total">0</div>
+        <div class="kpi-meta" id="tok-meta">输入 / 输出 / 缓存读 / 缓存写</div>
+        <div class="stack-mini">
+          <span id="tk-in" style="width:21.8%;background:var(--c1)"></span>
+          <span id="tk-out" style="width:8.1%;background:var(--c2)"></span>
+          <span id="tk-cr" style="width:62.8%;background:var(--c3)"></span>
+          <span id="tk-cw" style="width:7.3%;background:var(--c4)"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="kpi-label">缓存命中率 <span class="tag ok" id="cache-saved-tag">—</span></div>
+        <div class="kpi-value" id="hit-rate">0%</div>
+        <div class="kpi-meta" id="hit-meta">缓存读 ÷（缓存读 + 全新输入）</div>
+        <div class="chart" style="margin-top:8px"><div id="spark-hit"></div></div>
+      </div>
+
+      <div class="card">
+        <div class="kpi-label">单请求平均成本</div>
+        <div class="kpi-value" id="per-req">$0.0000</div>
+        <div class="kpi-meta"><span id="req-count">0</span> 次请求 · 单位经济学</div>
+        <div class="chart" style="margin-top:8px"><div id="spark-req"></div></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ 趋势区 ============ -->
+  <section aria-label="成本趋势">
+    <div class="sec-head">
+      <h2>成本趋势</h2>
+      <span class="hint" id="trend-hint">近 30 天 · 日粒度</span>
+    </div>
+    <div class="card">
+      <div class="card-h">
+        <h3>每日成本</h3>
+        <span class="sub" id="trend-sub">USD / 天</span>
+      </div>
+      <div class="chart">
+        <div id="chart-trend"></div>
+        <div class="tip" id="tip-trend"></div>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--c1)"></i>日成本</span>
+        <span><i style="background:var(--warn)"></i><span id="legend-budget">日预算基准线 —</span></span>
+        <span><i style="background:var(--muted-2)"></i>7 日移动均值</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 构成区 ============ -->
+  <section aria-label="成本构成">
+    <div class="sec-head">
+      <h2>成本构成</h2>
+      <span class="hint" id="mix-hint">近 30 天</span>
+    </div>
+    <div class="g-2">
+      <div class="card">
+        <div class="card-h"><h3>按模型</h3><span class="sub" id="mix-model-total">—</span></div>
+        <div id="mix-model"></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h3>按项目</h3><span class="sub" id="mix-proj-total">—</span></div>
+        <div id="mix-proj"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ Token 分层 ============ -->
+  <section aria-label="Token 分层">
+    <div class="sec-head">
+      <h2>Token 分层消耗</h2>
+      <span class="hint" id="tok-hint">近 14 天 · 堆叠 · 输入 / 输出 / 缓存读 / 缓存写</span>
+    </div>
+    <div class="card">
+      <div class="chart">
+        <div id="chart-tokens"></div>
+        <div class="tip" id="tip-tokens"></div>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--c1)"></i>输入 Input</span>
+        <span><i style="background:var(--c2)"></i>输出 Output</span>
+        <span><i style="background:var(--c3)"></i>缓存读 Cache Read</span>
+        <span><i style="background:var(--c4)"></i>缓存写 Cache Write</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 洞察区 ============ -->
+  <section aria-label="异常与优化洞察">
+    <div class="sec-head">
+      <h2>异常与优化洞察</h2>
+      <span class="hint" id="ins-hint">只输出数据真正支持得起的结论 · 看完知道下一步该做什么</span>
+    </div>
+    <div class="g-2" id="insights" aria-live="polite"></div>
+  </section>
+
+  <!-- ============ 明细区 ============ -->
+  <section aria-label="请求明细">
+    <div class="sec-head">
+      <h2>请求明细</h2>
+      <span class="hint" id="tbl-hint">最近 8 条记录</span>
+    </div>
+    <div class="card">
+      <div class="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th><th>项目</th><th>工具</th><th>模型</th>
+              <th class="r">输入</th><th class="r">输出</th><th class="r">缓存读</th>
+              <th class="r">成本</th><th>状态</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div class="tbl-foot" id="tbl-foot"></div>
+    </div>
+  </section>
+
+  <!-- ============ 口径说明 ============ -->
+  <footer class="foot">
+    <h4>指标口径说明</h4>
+    <div class="caliber">
+      <div><b>成本归属时刻</b>：按请求实际发生时刻计入，与账单出账日无关，因此与厂商账单可能存在跨日差异。</div>
+      <div><b>统计时区</b>：本地时区（UTC+8），自然日 00:00–24:00。所有「今天 / 本月」均按本地自然日切分。</div>
+      <div><b>双口径</b>：本页主口径为 <b>API 等价成本</b>（token × 价格表），便于跨模型比较；厂商口径（积分 × 折算率）并行展示，折算率未校准时标注「待校准」。</div>
+      <div><b>成本来源优先级</b>：① 厂商返回的 usage.cost ② 内置价格表 × token 数。两者不一致时以 ① 为准，并在明细中标记 cost_source。</div>
+      <div><b>币种</b>：USD 为基准币种，折算汇率带日期标注，不联网取实时汇率。</div>
+      <div><b>缓存命中率</b>：缓存读 token ÷（缓存读 token + 全新输入 token）；缓存写不计入分母。</div>
+      <div><b>缓存节省</b>：缓存读 token ×（输入单价 − 缓存读单价），按各模型单价分别计算后求和。</div>
+      <div><b>单请求平均成本</b>：区间总成本 ÷ 区间请求总数（含失败请求）。</div>
+      <div><b>月末预测</b>：本月日均成本 × 当月自然日天数，属粗略线性外推；样本不足 3 天时不做外推并明确标注。</div>
+      <div><b>金额精度</b>：内部以整数微美元（1e-6 USD）存储与计算，全程不使用浮点；构成区与折线各分项之和经配平，恒等于总额。</div>
+      <div><b>去重规则</b>：同一请求的流式写入按 request_id 去重，保留 output_tokens 最大的那条记录，避免重复计数。</div>
+      <div><b>未识别模型</b>：模型名不在价格表内时成本记为 0 并触发告警，绝不按「猜测单价」静默计入。</div>
+      <div><b>数据边界</b>：仅采集 token 计数、模型、时间与成本字段，不读取、不存储任何 prompt / 回答正文。</div>
+    </div>
+    <p class="disc">
+      本页数据来自本机 WorkBuddy 会话转录的本地只读解析，不访问任何远端接口、不上传任何数据。产品设计参考对象包括 llmcost、TokenBurn、tokentop、token-dashboard、ai-usage-dashboard、TOKEN-METER、llm.report、LiteLLM 及 Langfuse / Helicone / OpenLLMetry 等开源项目的公开说明（仅借鉴通用信息架构与功能模式，未复制其界面、文案或代码）。
+    </p>
+  </footer>
+
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ==========================================================================
+     数据全部来自本机 FastAPI（同源，无 CORS、无 CDN、无构建）
+     —— 与原型唯一的区别：原型里是硬编码假数据，这里换成真实接口。
+     ========================================================================== */
+
+  var state = {
+    range: 30,
+    currency: "USD",
+    meta: null, kpi: null, fx: null,
+    trend: null, tokens: null,
+    mixModel: null, mixProj: null,
+    insights: null, reqs: null,
+    tableView: { label: "最近 8 条记录", query: "" },
+    errors: []
+  };
+
+  /* ================= 工具函数 ================= */
+  function el(id){ return document.getElementById(id); }
+  function esc(s){
+    return String(s === null || s === undefined ? "" : s)
+      .replace(/[&<>"]/g, function(c){
+        return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];
+      });
+  }
+  function num(v){ var n = Number(v); return isFinite(n) ? n : 0; }
+  function sum(a){ var t = 0; for (var i=0;i<a.length;i++) t += num(a[i]); return t; }
+  function curSym(){ return state.currency === "CNY" ? "\u00A5" : "$"; }
+  function fxRate(){ return (state.currency === "CNY" && state.fx) ? num(state.fx.rate) : 1; }
+  function conv(usd){ return num(usd) * fxRate(); }
+  function money(usd, d){
+    d = (d === undefined) ? 2 : d;
+    return curSym() + conv(usd).toFixed(d);
+  }
+  function moneyK(usd){
+    var v = conv(usd);
+    return Math.abs(v) >= 1000 ? curSym() + (v/1000).toFixed(2) + "k" : money(usd);
+  }
+  function pct(n, d){ d = (d === undefined) ? 1 : d; return (num(n) * 100).toFixed(d) + "%"; }
+  function mTok(n){
+    n = num(n);
+    if (n >= 1e6) return (n/1e6).toFixed(2) + "M";
+    if (n >= 1e3) return (n/1e3).toFixed(1) + "K";
+    return String(Math.round(n));
+  }
+  function niceMax(v){
+    if (!(v > 0)) return 1;
+    var mag = Math.pow(10, Math.floor(Math.log(v)/Math.LN10));
+    var f = v/mag;
+    var step = f<=1?1:f<=2?2:f<=2.5?2.5:f<=5?5:10;
+    return step*mag;
+  }
+  function shortDay(day){
+    // "2026-10-09" -> "10-09"
+    return String(day || "").slice(5);
+  }
+
+  /* ================= 状态渲染 ================= */
+  function setBusy(on){
+    var btn = el("btn-refresh");
+    if (!btn) return;
+    btn.disabled = !!on;
+    btn.style.opacity = on ? ".6" : "";
+  }
+  function showBanner(){
+    var host = el("banner-host");
+    if (!host) return;
+    if (!state.errors.length){ host.innerHTML = ""; return; }
+    host.innerHTML = '<div class="banner"><b>部分数据加载失败（已展示可用部分）</b><br>' +
+      state.errors.map(function(e){ return "· <code>" + esc(e) + "</code>"; }).join("<br>") +
+      "</div>";
+  }
+  function emptyBlock(title, note){
+    return '<div class="empty"><b>' + esc(title) + '</b><span>' + esc(note || "") + '</span></div>';
+  }
+  function skeleton(rows){
+    var out = "";
+    for (var i=0;i<rows;i++){
+      out += '<div class="skel" style="height:' + (i === 0 ? 22 : 14) + 'px;margin:9px 0;width:' +
+             (i === 0 ? 46 : 62 + (i*7)%30) + '%"></div>';
+    }
+    return '<div style="padding:6px 0">' + out + '</div>';
+  }
+
+  /* ================= 数据获取 ================= */
+  function fetchJSON(path, opts){
+    return fetch(path, opts || { headers: { "Accept": "application/json" } })
+      .then(function(r){
+        if (!r.ok){
+          return r.text().then(function(t){
+            throw new Error(path + " → HTTP " + r.status + " " + String(t).slice(0, 100));
+          });
+        }
+        return r.json();
+      });
+  }
+  // 单个接口失败不应拖垮整页：每个任务自己兜住错误
+  function settle(p){
+    return p.then(
+      function(v){ return { ok: true, v: v }; },
+      function(e){ return { ok: false, e: (e && e.message) || String(e) }; }
+    );
+  }
+
+  function load(days){
+    days = days || state.range;
+    state.range = days;
+    state.errors = [];
+    setBusy(true);
+
+    // 先把还在加载的容器铺上骨架，避免空白闪烁
+    el("insights").innerHTML = skeleton(4);
+    el("mix-model").innerHTML = skeleton(4);
+    el("mix-proj").innerHTML = skeleton(4);
+    el("tbody").innerHTML = '<tr><td colspan="9">' + skeleton(3) + '</td></tr>';
+
+    var jobs = [
+      settle(fetchJSON("/api/meta")),
+      settle(fetchJSON("/api/kpi")),
+      settle(fetchJSON("/api/currency")),
+      settle(fetchJSON("/api/trend?days=" + days)),
+      settle(fetchJSON("/api/tokens?days=" + Math.min(14, days))),
+      settle(fetchJSON("/api/mix?dim=model&days=" + days)),
+      settle(fetchJSON("/api/mix?dim=project&days=" + days)),
+      settle(fetchJSON("/api/insights?days=" + days)),
+      settle(fetchJSON("/api/requests?days=" + days + "&limit=8&offset=0"))
+    ];
+
+    return Promise.all(jobs).then(function(res){
+      var slots = ["meta","kpi","fx","trend","tokens","mixModel","mixProj","insights","reqs"];
+      res.forEach(function(r, i){
+        if (r.ok) state[slots[i]] = r.v;
+        else state.errors.push(r.e);
+      });
+      // 汇率表：取 USD->CNY 的一条
+      if (state.fx && state.fx.rates && state.fx.rates.length){
+        state.fx.rate = state.fx.rates[0].rate;
+        state.fx.rate_date = state.fx.rates[0].rate_date;
+      }
+      state.tableView = { label: "最近 8 条记录 · 近 " + days + " 天", query: "" };
+      setBusy(false);
+      renderAll();
+    });
+  }
+
+  function renderAll(){
+    renderChips();
+    showBanner();
+    renderKPI();
+    renderTrend();
+    renderTokens();
+    renderMix();
+    renderInsights();
+    renderTable();
+  }
+
+  /* ================= 顶栏角标 ================= */
+  function renderChips(){
+    var meta = state.meta || {};
+    var chip = el("chip-source");
+    var ds = meta.data_source;
+    if (ds === "workbuddy"){
+      chip.className = "chip ok";
+      chip.textContent = "真实采集 · 本机 WorkBuddy";
+      chip.title = "数据来自本机 .workbuddy 会话转录的本地只读解析，未访问任何远端接口";
+    } else if (ds === "demo"){
+      chip.className = "chip demo";
+      chip.textContent = "示例数据 · 非真实用量";
+      chip.title = "当前库中只有示例数据。执行 python scripts/ingest_workbuddy.py --ingest 可灌入真实用量";
+    } else {
+      chip.className = "chip";
+      chip.textContent = "数据源未知";
+    }
+
+    var cr = meta.credit_rate || {};
+    el("chip-caliber").textContent = "口径 " + (state.kpi && state.kpi.north_star
+      ? state.kpi.north_star.cost_caliber_label : "API 等价成本");
+
+    var creditChip = el("chip-credit");
+    if (cr.calibrated === false && cr.rate){
+      creditChip.hidden = false;
+      creditChip.textContent = "折算率待校准 1 积分≈" + curSym() + conv(cr.rate).toFixed(4);
+      creditChip.title = "厂商按积分计费，积分→美元折算率尚未校准，厂商口径成本仅供参考";
+    } else {
+      creditChip.hidden = true;
+    }
+
+    var fxChip = el("chip-fx");
+    if (state.fx && state.fx.rate){
+      fxChip.hidden = false;
+      fxChip.textContent = "USD/CNY " + num(state.fx.rate).toFixed(4) + " · " + esc(state.fx.rate_date || "");
+      fxChip.title = "静态汇率（不联网取实时汇率）。点击切换 USD / CNY 展示";
+      fxChip.style.cursor = "pointer";
+    } else {
+      fxChip.hidden = true;
+    }
+  }
+
+  /* ================= KPI ================= */
+  function renderKPI(){
+    var k = state.kpi;
+    if (!k || !k.north_star){
+      el("mtd-cost").textContent = "—";
+      return;
+    }
+    var ns = k.north_star, td = k.today || {}, tk = k.tokens || {},
+        ca = k.cache || {}, pr = k.per_request || {}, hp = k.health || {};
+
+    // ---- 北极星：本月累计成本 ----
+    el("mtd-cost").innerHTML = money(ns.mtd_cost) +
+      ' <span class="unit">/ ' + money(ns.budget, 0) + ' 预算</span>';
+    el("mtd-pct").textContent = pct(ns.pct, 1);
+    el("time-pct").textContent = pct(ns.time_pct, 0);
+    el("mtd-bar").style.width = Math.min(100, num(ns.pct) * 100) + "%";
+    el("time-mark").style.left = (num(ns.time_pct) * 100) + "%";
+
+    var forecastTag = el("forecast-tag");
+    var over = num(ns.forecast_over_budget) > 0;
+    forecastTag.className = "tag " + (over ? "danger" : "ok");
+    forecastTag.textContent = over ? "超支预警" : "预算内";
+
+    el("forecast").textContent = money(ns.forecast_cost, 0);
+    // 估算值必须显式标注方法与样本量（RK-06）；KPI 卡里只留一句短标注，
+    // 完整方法写在悬浮提示里，避免把卡片撑爆。
+    el("forecast-note").textContent = ns.estimated ? "线性外推（估算）" : "实测值";
+    el("forecast-note").title = ns.estimate_method +
+      "；样本 " + num(ns.sample_days) + " 天 / 当月 " + num(ns.days_in_month) + " 天";
+
+    // 第二个口径：厂商口径（积分折算）。只给一个数字会让人误以为是同一口径。
+    el("vendor-cost").textContent = money(ns.vendor_cost);
+    el("vendor-cost").title = ns.vendor_cost_label;
+    el("vendor-note").hidden = !!ns.vendor_cost_calibrated;
+    el("runway").textContent = num(ns.runway_days);
+    el("runway").title = ns.runway_method;
+
+    // ---- 今日 ----
+    var d = num(td.delta_pct);
+    el("today-cost").textContent = money(td.cost);
+    var tag = el("today-tag");
+    // 涨=红、跌=绿（中国市场惯例）
+    tag.className = "tag " + (d > 0.2 ? "danger" : d > 0 ? "warn" : "ok");
+    tag.textContent = (d > 0 ? "+" : "") + pct(d, 1);
+    el("today-meta").innerHTML = '对比近 <b class="num">' + num(td.avg_days) + '</b> 日均值 <b class="num">' +
+      money(td.avg_cost) + '</b>';
+
+    // ---- Token 总量 ----
+    var layers = ["input","output","cache_read","cache_write"];
+    var total = num(tk.total);
+    el("tok-total").textContent = mTok(total);
+    el("tok-meta").innerHTML =
+      '输入 <b class="num">' + mTok(tk.input) + '</b> · 输出 <b class="num">' + mTok(tk.output) +
+      '</b> · 缓存读 <b class="num">' + mTok(tk.cache_read) + '</b> · 缓存写 <b class="num">' + mTok(tk.cache_write) + '</b>';
+    var ids = { input: "tk-in", output: "tk-out", cache_read: "tk-cr", cache_write: "tk-cw" };
+    layers.forEach(function(key){
+      var w = total > 0 ? (num(tk[key]) / total * 100) : 0;
+      el(ids[key]).style.width = w.toFixed(2) + "%";
+    });
+
+    // ---- 缓存 ----
+    // 注意：缓存读为 0 有两种成因，含义完全不同，不能都显示成「0.0%」。
+    var crTok = num(ca.cache_read_tokens);
+    if (crTok > 0){
+      el("hit-rate").textContent = pct(ca.hit_rate, 1);
+      el("hit-rate").title = "";
+      el("hit-meta").innerHTML = '缓存读 <b class="num">' + mTok(crTok) + '</b> · ' + esc(ca.estimate_method);
+    } else {
+      el("hit-rate").textContent = "—";
+      el("hit-rate").title = "本区间未上报缓存读 token，无法计算命中率";
+      el("hit-meta").textContent = num(tk.input) > 0
+        ? "本区间未上报缓存读 token（该数据源可能不提供此字段），故不给命中率数字"
+        : "缓存读 ÷（缓存读 + 全新输入）";
+    }
+    var savedTag = el("cache-saved-tag");
+    if (num(ca.saved_usd) > 0){
+      savedTag.hidden = false;
+      savedTag.textContent = "已省 " + money(ca.saved_usd);
+      savedTag.title = ca.estimate_method;
+    } else {
+      savedTag.hidden = true;
+    }
+
+    // ---- 单请求 ----
+    el("per-req").textContent = money(pr.cost, 6);
+    el("req-count").textContent = num(pr.requests).toLocaleString("en-US");
+
+    // ---- 未定价告警（RK-03）----
+    var host = el("banner-host");
+    if (host && num(hp.unpriced_records) > 0 && !state.errors.length){
+      host.innerHTML = '<div class="banner"><b>有 ' + num(hp.unpriced_records) +
+        ' 条记录未匹配到价格</b>（占 ' + pct(hp.unpriced_ratio, 1) + '）：' + esc(hp.note) + '</div>';
+    }
+
+    // ---- sparkline ----
+    var tp = (state.trend && state.trend.points) || [];
+    var costs = tp.map(function(p){ return num(p.cost); });
+    var reqs  = tp.map(function(p){ return num(p.requests); });
+    var tkp = (state.tokens && state.tokens.points) || [];
+    var hitSeries = tkp.map(function(p){
+      var den = num(p.input) + num(p.cache_read);
+      return den > 0 ? (num(p.cache_read) / den) * 100 : 0;
+    });
+    var hasCache = hitSeries.some(function(v){ return v > 0; });
+    spark("spark-cost", tail(costs, 14), "var(--c1)");
+    spark("spark-req", tail(reqs, 14), "var(--c2)");
+    // 没有缓存数据就不要画一条平在 0 的线，那会让人以为「命中率真的是 0」
+    if (hasCache) spark("spark-hit", tail(hitSeries, 14), "var(--accent)");
+    else el("spark-hit").innerHTML = '<div style="font-size:11px;color:var(--muted-2);padding:6px 0">无缓存读数据</div>';
+  }
+  function tail(a, n){ return a.slice(Math.max(0, a.length - n)); }
+
+  function spark(id, data, color){
+    var host = el(id);
+    if (!host) return;
+    if (!data || data.length < 2){ host.innerHTML = ""; return; }
+    var w=140,h=30,p=2;
+    var mx = Math.max.apply(null, data), mn = Math.min.apply(null, data);
+    var rng = (mx - mn) || 1;
+    var pts = data.map(function(v,i){
+      var x = p + (w - 2*p) * (i/(data.length-1 || 1));
+      var y = h - p - (h - 2*p) * ((v - mn)/rng);
+      return [x,y];
+    });
+    var d = "M" + pts.map(function(q){ return q[0].toFixed(2)+" "+q[1].toFixed(2); }).join(" L");
+    var area = d + " L " + (w-p) + " " + (h-p) + " L " + p + " " + (h-p) + " Z";
+    var gid = "sg" + id;
+    host.innerHTML =
+      '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" style="height:'+h+'px" aria-hidden="true">'+
+        '<defs><linearGradient id="'+gid+'" x1="0" y1="0" x2="0" y2="1">'+
+          '<stop offset="0%" stop-color="'+color+'" stop-opacity=".34"/>'+
+          '<stop offset="100%" stop-color="'+color+'" stop-opacity="0"/>'+
+        '</linearGradient></defs>'+
+        '<path d="'+area+'" fill="url(#'+gid+')"/>'+
+        '<path d="'+d+'" fill="none" stroke="'+color+'" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>'+
+        '<circle cx="'+pts[pts.length-1][0].toFixed(2)+'" cy="'+pts[pts.length-1][1].toFixed(2)+'" r="2.2" fill="'+color+'"/>'+
+      '</svg>';
+  }
+
+  /* ================= 趋势折线 ================= */
+  function renderTrend(){
+    var t = state.trend;
+    var host = el("chart-trend");
+    var points = (t && t.points) || [];
+    if (!points.length){
+      host.innerHTML = emptyBlock("暂无趋势数据", (t && t.empty_note) || "先执行一次采集再查看");
+      el("trend-hint").textContent = "近 " + state.range + " 天 · 无数据";
+      return;
+    }
+    var data = points.map(function(p){ return num(p.cost); });
+    var mv   = points.map(function(p){ return p.moving_avg === null || p.moving_avg === undefined ? num(p.cost) : num(p.moving_avg); });
+    var base = num(t.daily_budget);
+    var W=1000,H=280,PL=64,PR=16,PT=16,PB=30;
+    var iw=W-PL-PR, ih=H-PT-PB;
+    var mx = niceMax(Math.max(Math.max.apply(null, data), base));
+    var X=function(i){ return PL + (data.length>1 ? iw*(i/(data.length-1)) : iw/2); };
+    var Y=function(v){ return PT + ih*(1 - v/mx); };
+    var s = "";
+
+    s += '<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="每日成本趋势折线图">';
+    s += '<defs><linearGradient id="tg" x1="0" y1="0" x2="0" y2="1">'+
+           '<stop offset="0%" stop-color="#818CF8" stop-opacity=".30"/>'+
+           '<stop offset="100%" stop-color="#818CF8" stop-opacity="0"/></linearGradient></defs>';
+
+    for (var t2=0;t2<=4;t2++){
+      var v = mx*t2/4, y = Y(v);
+      s += '<line x1="'+PL+'" y1="'+y.toFixed(1)+'" x2="'+(W-PR)+'" y2="'+y.toFixed(1)+'" stroke="rgba(148,163,184,.13)" stroke-width="1"/>';
+      s += '<text x="'+(PL-10)+'" y="'+(y+4).toFixed(1)+'" fill="#64748B" font-size="11" font-family="Fira Code,monospace" text-anchor="end">'+curSym()+v.toFixed(v<10?1:0)+'</text>';
+    }
+
+    var line = data.map(function(v,i){ return (i?"L":"M")+X(i).toFixed(1)+" "+Y(v).toFixed(1); }).join(" ");
+    var area = line + " L"+X(data.length-1).toFixed(1)+" "+(PT+ih)+" L"+X(0).toFixed(1)+" "+(PT+ih)+" Z";
+    var mvLine = mv.map(function(v,i){ return (i?"L":"M")+X(i).toFixed(1)+" "+Y(v).toFixed(1); }).join(" ");
+
+    s += '<path d="'+area+'" fill="url(#tg)"/>';
+    s += '<path d="'+mvLine+'" fill="none" stroke="#64748B" stroke-width="1.3" stroke-dasharray="2 4" stroke-linejoin="round"/>';
+
+    if (base > 0){
+      s += '<line x1="'+PL+'" y1="'+Y(base).toFixed(1)+'" x2="'+(W-PR)+'" y2="'+Y(base).toFixed(1)+'" stroke="#F59E0B" stroke-width="1.4" stroke-dasharray="6 5"/>';
+      s += '<text x="'+(W-PR-2)+'" y="'+(Y(base)-7).toFixed(1)+'" fill="#F59E0B" font-size="10.5" font-family="Fira Code,monospace" text-anchor="end">日预算 '+curSym()+base.toFixed(2)+'</text>';
+      el("legend-budget").textContent = "日预算基准线 " + curSym() + base.toFixed(2);
+    } else {
+      el("legend-budget").textContent = "日预算基准线（未设置）";
+    }
+
+    s += '<path d="'+line+'" fill="none" stroke="#818CF8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+    points.forEach(function(p,i){
+      if (p.over_budget){
+        s += '<circle cx="'+X(i).toFixed(1)+'" cy="'+Y(data[i]).toFixed(1)+'" r="3" fill="#1B2336" stroke="#F59E0B" stroke-width="1.8"/>';
+      }
+    });
+    s += '<circle cx="'+X(data.length-1).toFixed(1)+'" cy="'+Y(data[data.length-1]).toFixed(1)+'" r="4.2" fill="#818CF8" stroke="#0F172A" stroke-width="2"/>';
+
+    var lbl = Math.min(6, data.length);
+    for (var k=0;k<lbl;k++){
+      var idx = Math.round(k*(data.length-1)/(lbl-1||1));
+      var txt = idx === data.length-1 ? "今天" : shortDay(points[idx].day);
+      s += '<text x="'+X(idx).toFixed(1)+'" y="'+(H-9)+'" fill="#64748B" font-size="10.5" font-family="Fira Code,monospace" text-anchor="'+(k===0?"start":k===lbl-1?"end":"middle")+'">'+txt+'</text>';
+    }
+    var bw = iw/Math.max(1, data.length);
+    data.forEach(function(v,i){
+      s += '<rect x="'+(X(i)-bw/2).toFixed(1)+'" y="'+PT+'" width="'+bw.toFixed(1)+'" height="'+ih+'" fill="transparent" data-i="'+i+'"/>';
+    });
+    s += '</svg>';
+    host.innerHTML = s;
+
+    var tip = el("tip-trend"), wrap = host.parentNode;
+    host.querySelectorAll("rect[data-i]").forEach(function(r){
+      r.addEventListener("mouseenter", function(){
+        var i = +r.getAttribute("data-i");
+        var p = points[i];
+        tip.innerHTML = '<div class="t-dim">' + esc(p.day) + (i === points.length-1 ? "（今天）" : "") + '</div>' +
+          '日成本 <b>' + money(p.cost) + '</b><br>' +
+          '<span class="t-dim">7 日均值 </span><b>' + money(p.moving_avg === null || p.moving_avg === undefined ? p.cost : p.moving_avg) + '</b><br>' +
+          '<span class="t-dim">请求数 </span><b>' + num(p.requests) + '</b>' +
+          (p.has_data ? "" : '<br><span class="t-dim">当日无采集记录</span>') +
+          (p.over_budget ? '<br><span style="color:#F59E0B">超出日预算 ' + money(num(p.cost) - base) + '</span>' : "");
+        var box = wrap.getBoundingClientRect(), rx = r.getBoundingClientRect();
+        tip.style.opacity = "1";
+        tip.style.left = Math.max(4, Math.min(box.width - tip.offsetWidth - 4, rx.left - box.left + rx.width/2)) + "px";
+        tip.style.top = "6px";
+      });
+      r.addEventListener("mouseleave", function(){ tip.style.opacity = "0"; });
+    });
+
+    el("trend-hint").textContent = "近 " + state.range + " 天 · 日粒度 · 区间合计 " + money(t.total_cost) +
+      " · 有数据 " + num(t.data_days) + "/" + state.range + " 天";
+    el("trend-sub").textContent = curSym() + " / 天";
+  }
+
+  /* ================= Token 堆叠柱 ================= */
+  function renderTokens(){
+    var t = state.tokens;
+    var host = el("chart-tokens");
+    var points = (t && t.points) || [];
+    if (!points.length){
+      host.innerHTML = emptyBlock("暂无 Token 分层数据", (t && t.empty_note) || "先执行一次采集再查看");
+      return;
+    }
+    var W=1000,H=250,PL=64,PR=16,PT=14,PB=28;
+    var iw=W-PL-PR, ih=H-PT-PB;
+    var keys = [["input","var(--c1)"],["output","var(--c2)"],["cache_read","var(--c3)"],["cache_write","var(--c4)"]];
+    var perDay = points.map(function(p){ return num(p.total)/1e3; }); // 单位 K token
+    var mx = niceMax(Math.max.apply(null, perDay));
+    var bw = Math.min(34, iw/points.length*0.62);
+    var X = function(i){ return PL + iw*(i+0.5)/points.length; };
+    var Y = function(v){ return PT + ih*(1-v/mx); };
+
+    var s = '<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="Token 分层堆叠柱状图">';
+    for (var t2=0;t2<=4;t2++){
+      var v = mx*t2/4, y = Y(v);
+      s += '<line x1="'+PL+'" y1="'+y.toFixed(1)+'" x2="'+(W-PR)+'" y2="'+y.toFixed(1)+'" stroke="rgba(148,163,184,.13)"/>';
+      s += '<text x="'+(PL-10)+'" y="'+(y+4).toFixed(1)+'" fill="#64748B" font-size="11" font-family="Fira Code,monospace" text-anchor="end">'+(v>=1000?(v/1000).toFixed(1)+"M":v.toFixed(0)+"K")+'</text>';
+    }
+    points.forEach(function(p,i){
+      var acc = 0;
+      keys.forEach(function(k){
+        var val = num(p[k[0]])/1e3;
+        var y0 = Y(acc+val), y1 = Y(acc);
+        s += '<rect x="'+(X(i)-bw/2).toFixed(1)+'" y="'+y0.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+Math.max(0.8,(y1-y0)).toFixed(1)+'" fill="'+k[1]+'" rx="1.5"/>';
+        acc += val;
+      });
+      s += '<rect x="'+(X(i)-bw/2).toFixed(1)+'" y="'+PT+'" width="'+bw.toFixed(1)+'" height="'+ih+'" fill="transparent" data-ti="'+i+'"/>';
+      var step = Math.max(1, Math.ceil(points.length/7));
+      if (i % step === 0 || i === points.length-1){
+        s += '<text x="'+X(i).toFixed(1)+'" y="'+(H-8)+'" fill="#64748B" font-size="10.5" font-family="Fira Code,monospace" text-anchor="middle">'+shortDay(p.day)+'</text>';
+      }
+    });
+    s += '</svg>';
+    host.innerHTML = s;
+
+    var tip = el("tip-tokens"), wrap = host.parentNode;
+    host.querySelectorAll("rect[data-ti]").forEach(function(r){
+      r.addEventListener("mouseenter", function(){
+        var i = +r.getAttribute("data-ti"), p = points[i];
+        tip.innerHTML = '<div class="t-dim">' + esc(p.day) + '</div>' +
+          '合计 <b>' + mTok(p.total) + '</b> token<br>' +
+          '<span class="t-dim">输入</span> <b>' + mTok(p.input) + '</b> · <span class="t-dim">输出</span> <b>' + mTok(p.output) + '</b><br>' +
+          '<span class="t-dim">缓存读</span> <b>' + mTok(p.cache_read) + '</b> · <span class="t-dim">缓存写</span> <b>' + mTok(p.cache_write) + '</b>';
+        var box = wrap.getBoundingClientRect(), rx = r.getBoundingClientRect();
+        tip.style.opacity = "1";
+        tip.style.left = Math.max(4, Math.min(box.width - tip.offsetWidth - 4, rx.left - box.left + rx.width/2)) + "px";
+        tip.style.top = "6px";
+      });
+      r.addEventListener("mouseleave", function(){ tip.style.opacity = "0"; });
+    });
+
+    el("tok-hint").textContent = "近 " + num(t.days) + " 天 · 堆叠 · 合计 " + mTok(t.totals ? t.totals.total : 0) + " token";
+  }
+
+  /* ================= 构成区 ================= */
+  var PALETTE = ["var(--c1)","var(--c2)","var(--c3)","var(--c4)","var(--c5)","#60A5FA","#FB923C","#34D399"];
+  var MSEL = null, PSEL = null;
+
+  function renderMix(){
+    var mm = state.mixModel, mp = state.mixProj;
+    var total = money(mm ? mm.total_cost : 0);
+    el("mix-hint").textContent = "近 " + state.range + " 天 · 区间合计 " + total;
+    el("mix-model-total").textContent = mm ? total + " · " + num(mm.total_requests) + " 次" : "—";
+    el("mix-proj-total").textContent = mp ? total : "—";
+    el("mix-model").innerHTML = mixRows(mm, "m");
+    el("mix-proj").innerHTML  = mixRows(mp, "p");
+    bindMix();
+  }
+  function mixRows(data, kind){
+    if (!data || !data.items || !data.items.length){
+      return emptyBlock("暂无构成数据", (data && data.empty_note) || "该区间内没有采集到记录");
+    }
+    return data.items.map(function(x,i){
+      var color = PALETTE[i % PALETTE.length];
+      var share = num(x.share);
+      return '<div class="brow" data-'+kind+'="'+i+'">'+
+        '<div class="nm"><span class="dot" style="background:'+color+'"></span>'+esc(x.name)+
+          (x.is_remainder ? ' <span class="t-dim" style="font-size:10.5px">（长尾合并）</span>' : '')+
+          '<em>'+pct(share,1)+'</em></div>'+
+        '<div class="vl">'+money(x.cost)+'</div>'+
+        '<div class="track"><i style="width:'+pct(share,1)+';background:'+color+'"></i></div>'+
+      '</div>';
+    }).join("");
+  }
+  function bindMix(){
+    document.querySelectorAll("[data-m]").forEach(function(r){
+      r.addEventListener("mouseenter", function(){ MSEL = +r.getAttribute("data-m"); highlight(); });
+    });
+    document.querySelectorAll("[data-p]").forEach(function(r){
+      r.addEventListener("mouseenter", function(){ PSEL = +r.getAttribute("data-p"); highlight(); });
+    });
+    document.querySelectorAll("[data-m],[data-p]").forEach(function(r){
+      r.addEventListener("mouseleave", function(){ MSEL = null; PSEL = null; highlight(); });
+    });
+  }
+  function highlight(){
+    document.querySelectorAll("[data-m]").forEach(function(r){
+      r.style.opacity = (MSEL === null || MSEL === +r.getAttribute("data-m")) ? "1" : ".42";
+    });
+    document.querySelectorAll("[data-p]").forEach(function(r){
+      r.style.opacity = (PSEL === null || PSEL === +r.getAttribute("data-p")) ? "1" : ".42";
+    });
+  }
+
+  /* ================= 洞察区 ================= */
+  var ICONS = {
+    danger: '<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>',
+    warn:   '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z"/>',
+    ok:     '<path d="M20 6 9 17l-5-5"/>',
+    neutral:'<path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 3v9h9"/>'
+  };
+  function renderInsights(){
+    var host = el("insights");
+    var d = state.insights;
+    var list = (d && d.insights) || [];
+    if (!list.length){
+      host.innerHTML = emptyBlock("暂无洞察",
+        (d && d.empty_note) || "当前数据量还不足以支撑结论——这里不会用占位文案凑数");
+      el("ins-hint").textContent = "只输出数据真正支持得起的结论 · 看完知道下一步该做什么";
+      return;
+    }
+    host.innerHTML = list.map(function(item, idx){
+      var sev = ICONS[item.severity] ? item.severity : "neutral";
+      var act = item.action && item.action.label
+        ? '<button class="act" type="button" data-act="' + esc(item.action.kind) + '">' + esc(item.action.label) + ' →</button>'
+        : "";
+      return '<div class="ins ' + sev + '">'+
+        '<div class="ic" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + ICONS[sev] + '</svg></div>'+
+        '<div><h4>' + esc(item.title) + '</h4><p>' + esc(item.detail) + '</p>' + act + '</div>'+
+      '</div>';
+    }).join("");
+    host.querySelectorAll("[data-act]").forEach(function(b){
+      b.addEventListener("click", function(){ applyAction(b.getAttribute("data-act")); });
+    });
+    el("ins-hint").textContent = "近 " + num(d.days) + " 天 · 区间成本 " + money(d.total_cost) +
+      " · " + list.length + " 条结论";
+  }
+
+  /* ================= 洞察里的行动入口 ================= */
+  function applyAction(kind){
+    if (!kind) return;
+    var label = "", query = "";
+    if (kind.indexOf("filter_status:") === 0){
+      var st = kind.split(":")[1];
+      query = "&status=" + encodeURIComponent(st);
+      label = "筛选：状态 = " + st;
+    } else if (kind.indexOf("drill_model:") === 0){
+      var m = kind.split(":")[1];
+      query = "&model=" + encodeURIComponent(m);
+      label = "筛选：模型 = " + m;
+    } else if (kind === "filter_recent"){
+      query = "&days=1";
+      label = "筛选：仅最近 1 天";
+    } else if (kind === "open_pricing"){
+      loadPricing();
+      return;
+    } else if (kind === "reingest"){
+      doRefresh();
+      return;
+    } else if (kind === "filter_cache"){
+      label = "缓存明细：见上方「缓存命中率」卡片与 Token 分层图";
+      query = "";
+    }
+    state.tableView = {
+      label: label + "（近 " + state.range + " 天）",
+      query: "&days=" + state.range + query + "&limit=8&offset=0"
+    };
+    refreshTable();
+  }
+
+  /* ================= 明细表 ================= */
+  function renderTable(){
+    var d = state.reqs;
+    var items = (d && d.items) || [];
+    var tbody = el("tbody");
+    if (!items.length){
+      tbody.innerHTML = '<tr><td colspan="9">' +
+        emptyBlock("暂无明细记录", "该筛选条件下没有采集到请求。可点「刷新」重新采集本机用量。") + '</td></tr>';
+    } else {
+      tbody.innerHTML = items.map(function(r){
+        var st = statusMeta(r.status);
+        var time = String(r.ts || "").slice(11, 19);
+        var modelLabel = r.priced ? r.model : (r.model_raw || r.model);
+        return "<tr title=\"" + esc(r.request_id) + "\">" +
+          '<td class="m">' + esc(time) + '</td>' +
+          "<td>" + esc(r.project) + "</td>" +
+          "<td>" + esc(r.tool) + "</td>" +
+          "<td>" + esc(modelLabel) + (r.priced ? "" : ' <span class="tag warn">未定价</span>') + "</td>" +
+          '<td class="r m">' + mTok(r.input_tokens) + "</td>" +
+          '<td class="r m">' + mTok(r.output_tokens) + "</td>" +
+          '<td class="r m">' + (num(r.cache_read_tokens) ? mTok(r.cache_read_tokens) : "—") + "</td>" +
+          '<td class="r m">' + money(r.cost, 6) + "</td>" +
+          '<td><span class="tag ' + st.cls + '">' + st.text + "</span></td>" +
+        "</tr>";
+      }).join("");
+    }
+
+    el("tbl-hint").textContent = state.tableView.label + (d ? " · 共 " + num(d.total) + " 条" : "");
+    var foot = el("tbl-foot");
+    if (d){
+      foot.innerHTML =
+        "区间成本 <b>" + money(d.sum_cost) + "</b>" +
+        " · 厂商口径 <b>" + money(d.sum_vendor_cost) + "</b>" +
+        " · Token <b>" + mTok(d.sum_tokens) + "</b>" +
+        " · 命中 <b>" + num(d.total) + "</b> 条" +
+        (state.tableView.query ? ' <a href="#" id="tbl-reset" style="color:var(--c1)">清除筛选</a>' : "");
+      var reset = el("tbl-reset");
+      if (reset){
+        reset.addEventListener("click", function(ev){
+          ev.preventDefault();
+          state.tableView = { label: "最近 8 条记录 · 近 " + state.range + " 天", query: "" };
+          refreshTable();
+        });
+      }
+    } else {
+      foot.innerHTML = "";
+    }
+  }
+  function statusMeta(s){
+    if (s === "success") return { text: "成功", cls: "ok" };
+    if (s === "timeout") return { text: "超时", cls: "warn" };
+    if (s === "throttled") return { text: "限流", cls: "warn" };
+    return { text: "失败", cls: "danger" };
+  }
+  function refreshTable(){
+    var q = state.tableView.query || ("&days=" + state.range + "&limit=8&offset=0");
+    el("tbody").innerHTML = '<tr><td colspan="9">' + skeleton(3) + '</td></tr>';
+    return fetchJSON("/api/requests?" + q.replace(/^&/, ""))
+      .then(function(d){ state.reqs = d; renderTable(); })
+      .catch(function(e){
+        state.errors = [e.message || String(e)];
+        renderTable();
+        showBanner();
+      });
+  }
+
+  /* ================= 价格表面板 ================= */
+  function loadPricing(){
+    var host = el("banner-host");
+    if (!host) return;
+    host.innerHTML = '<div class="banner" style="border-color:var(--border-strong);background:rgba(148,163,184,.06);color:var(--muted)">' +
+      '<b>正在读取价格表…</b></div>';
+    fetchJSON("/api/pricing").then(function(d){
+      var rows = d.models.map(function(m){
+        return "<tr><td>" + esc(m.model) + "</td><td>" + esc(m.pricing_version) + "</td>" +
+          '<td class="r">' + esc(m.input_per_mtok) + "</td>" +
+          '<td class="r">' + esc(m.output_per_mtok) + "</td>" +
+          '<td class="r">' + esc(m.cache_read_per_mtok) + "</td>" +
+          '<td class="r">' + esc(m.cache_write_per_mtok) + "</td>" +
+          "<td>" + esc(m.source) + "</td></tr>";
+      }).join("");
+      var unknown = d.unknown_models || [];
+      host.innerHTML = '<div class="banner" style="border-color:var(--border-strong);background:rgba(148,163,184,.06);color:var(--muted)">' +
+        "<b>价格表 v" + esc(d.current_version) + "</b> · 单价单位 USD / 百万 token" +
+        (unknown.length
+          ? "<br>未识别模型 " + unknown.length + " 个：" + unknown.map(function(u){
+              return esc(u.model_raw) + "（" + num(u.hit_count) + " 次）";
+            }).join("、")
+          : "") +
+        '<div style="max-height:230px;overflow:auto;margin-top:9px">' +
+          '<table style="min-width:0"><thead><tr><th>模型</th><th>版本</th><th class="r">输入</th><th class="r">输出</th><th class="r">缓存读</th><th class="r">缓存写</th><th>来源</th></tr></thead>' +
+          "<tbody>" + rows + "</tbody></table></div>" +
+      "</div>";
+    }).catch(function(e){
+      host.innerHTML = '<div class="banner">读取价格表失败：<code>' + esc(e.message || e) + '</code></div>';
+    });
+  }
+
+  /* ================= 导出 CSV ================= */
+  function exportCSV(){
+    var q = state.tableView.query || ("&days=" + state.range);
+    fetchJSON("/api/requests?" + q.replace(/^&/, "") + "&limit=500&offset=0").then(function(d){
+      var head = ["ts","project","tool","model","model_raw","input_tokens","output_tokens","cache_read_tokens","cache_write_tokens","cost_usd","cost_source","status","request_id"];
+      var lines = [head.join(",")];
+      d.items.forEach(function(r){
+        lines.push([
+          r.ts, r.project, r.tool, r.model, r.model_raw,
+          r.input_tokens, r.output_tokens, r.cache_read_tokens, r.cache_write_tokens,
+          r.cost, r.cost_source, r.status, r.request_id
+        ].map(function(v){
+          var s = String(v === null || v === undefined ? "" : v);
+          return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+        }).join(","));
+      });
+      var blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "token-usage-" + new Date().toISOString().slice(0,10) + ".csv";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(a.href);
+    }).catch(function(e){
+      state.errors = ["导出失败：" + (e.message || e)];
+      showBanner();
+    });
+  }
+
+  /* ================= 手动刷新（重算聚合 + 告警巡检） ================= */
+  function doRefresh(){
+    var btn = el("btn-refresh");
+    var old = btn.innerHTML;
+    btn.innerHTML = '<span class="spin"></span> 刷新中';
+    setBusy(true);
+    fetchJSON("/api/refresh", { method: "POST" })
+      .then(function(){
+        return load(state.range);
+      })
+      .catch(function(e){
+        state.errors = ["刷新失败：" + (e.message || e)];
+        showBanner();
+      })
+      .then(function(){
+        btn.innerHTML = old;
+        setBusy(false);
+      });
+  }
+
+  /* ================= 交互绑定 ================= */
+  document.querySelectorAll(".seg button").forEach(function(b){
+    b.addEventListener("click", function(){
+      var days = +b.getAttribute("data-range");
+      document.querySelectorAll(".seg button").forEach(function(o){
+        o.setAttribute("aria-pressed", String(o === b));
+      });
+      load(days);
+    });
+  });
+
+  el("btn-refresh").addEventListener("click", doRefresh);
+  el("btn-export").addEventListener("click", exportCSV);
+
+  // 币种切换（点汇率角标）
+  el("chip-fx").addEventListener("click", function(){
+    state.currency = state.currency === "USD" ? "CNY" : "USD";
+    renderAll();
+  });
+
+  /* ================= 启动 ================= */
+  // 顶栏加一行错误提示位
+  (function(){
+    var wrap = document.querySelector(".wrap");
+    var host = document.createElement("div");
+    host.id = "banner-host";
+    wrap.insertBefore(host, wrap.firstChild);
+  })();
+
+  load(30);
+})();
+</script>
+</body>
+</html>

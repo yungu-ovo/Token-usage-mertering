@@ -1,0 +1,15 @@
+{
+  "note": "原始模型名 -> 归一后模型名 的精确映射表。命不中的会再走正则规则，仍命不中就进 __unknown__ 桶并告警。",
+  "aliases": {
+    "claude-4.5-sonnet": "claude-sonnet-4.5",
+    "claude-4.5-opus": "claude-opus-4.1",
+    "claude-4.5-haiku": "claude-haiku-4.5",
+    "sonnet-4.5": "claude-sonnet-4.5",
+    "opus-4.1": "claude-opus-4.1",
+    "gpt5": "gpt-5",
+    "gpt-5.0": "gpt-5",
+    "gemini-2.5-pro-preview": "gemini-2.5-pro",
+    "deepseek-chat": "deepseek-v3",
+    "deepseek-v3.1": "deepseek-v3"
+  }
+}
