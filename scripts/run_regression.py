@@ -88,6 +88,53 @@ def db_copy(src: Path, dst_dir: Path) -> Path:
     return dst
 
 
+def run(cmd: list[str], timeout: int = 300) -> tuple[int, str]:
+    """跑一条命令，返回 (退出码, 合并输出)。"""
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            encoding="utf-8",
+            errors="replace",
+        )
+        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+    except subprocess.TimeoutExpired as exc:
+        return 124, f"超时（>{timeout}s）\n" + (exc.stdout or "")
+
+
+def prepare_db(tmpdir: Path, live_db: bool) -> tuple[str, str, bool]:
+    """准备回归要用的库，返回 ``(库路径, 说明, 是否合成数据)``。
+
+    ``data/`` 是 gitignore 的，所以**全新克隆里没有 usage.db**。此时若直接
+    复制就会 FileNotFoundError——仓库卫生和「clone 下来就能跑」不该冲突，
+    所以这里退一步：造一份合成演示数据，让各层都有数据可跑，并在报告里写明。
+    """
+    src = Path(config_db_path())
+
+    if live_db:
+        if not src.exists():
+            raise SystemExit(
+                f"--live-db 指定的库不存在：{src}\n"
+                "先灌数：python scripts/ingest_workbuddy.py --ingest"
+            )
+        return str(src), f"真实库 {src}", False
+
+    if not src.exists():
+        target = tmpdir / "usage.db"
+        print(f"未找到 {src}（全新克隆的正常情况）→ 生成合成演示数据供回归使用。")
+        code, out = run(
+            [PY, "scripts/seed_demo.py", "--db", str(target), "--reset"], timeout=300
+        )
+        if code != 0:
+            raise SystemExit("生成演示数据失败：\n" + out[-2000:])
+        return str(target), f"合成演示数据（未找到 {src}）", True
+
+    return str(db_copy(src, tmpdir)), f"临时副本（源：{src}）", False
+
+
 class Layer:
     def __init__(self, key: str, title: str, cmd: list[str], timeout: int = 600) -> None:
         self.key = key
@@ -98,10 +145,20 @@ class Layer:
         self.seconds = 0.0
         self.output = ""
         self.headline = ""
+        self.skipped = False
+        self.skip_reason = ""
 
     @property
     def ok(self) -> bool:
-        return self.rc == 0
+        # 跳过不算失败，但报告里必须显式写出原因，绝不静默略过
+        return self.skipped or self.rc == 0
+
+    def skip(self, reason: str) -> "Layer":
+        self.skipped = True
+        self.skip_reason = reason
+        self.headline = reason
+        print(f"\n{'=' * 72}\n⏭ 跳过：{self.title}\n   原因：{reason}")
+        return self
 
     def tail(self, n: int = 12) -> str:
         return "\n".join(self.output.strip().splitlines()[-n:])
@@ -155,14 +212,19 @@ def pick_headline(key: str, output: str) -> str:
 def write_report(path: Path, layers: list[Layer], base: str, db_note: str, total: float) -> None:
     now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     bad = [x for x in layers if not x.ok]
+    skipped = [x for x in layers if x.skipped]
+    ran = len(layers) - len(skipped)
+    verdict = "全部通过" if not bad else f"{len(bad)} 层未通过"
+    if skipped and not bad:
+        verdict += f"（{len(skipped)} 层跳过）"
+
     lines = [
         f"# 回归报告 · Token 消耗看板 v{__version__}",
         "",
         f"- 执行时间：{now}",
         f"- 服务地址：{base}（回归自管实例，跑完已关闭）",
         f"- 数据：{db_note}",
-        f"- **结论：{'全部通过' if not bad else f'{len(bad)} 层未通过'}**"
-        f"（{len(layers) - len(bad)}/{len(layers)} 层）  总耗时 {total:.1f}s",
+        f"- **结论：{verdict}**（跑 {ran}/{ran} 层）  总耗时 {total:.1f}s",
         "",
         "## 分层结果",
         "",
@@ -170,10 +232,16 @@ def write_report(path: Path, layers: list[Layer], base: str, db_note: str, total
         "| --- | --- | --- | --- |",
     ]
     for lx in layers:
-        lines.append(
-            f"| {lx.title} | {'通过' if lx.ok else '**未通过**'} | {lx.seconds:.1f}s | "
-            f"{lx.headline or '—'} |"
-        )
+        if lx.skipped:
+            status, cost = "跳过", "—"
+        else:
+            status, cost = ("通过" if lx.ok else "**未通过**"), f"{lx.seconds:.1f}s"
+        lines.append(f"| {lx.title} | {status} | {cost} | {lx.headline or '—'} |")
+
+    if skipped:
+        lines += ["", "## 跳过的层及原因", ""]
+        for lx in skipped:
+            lines.append(f"- **{lx.title}**：{lx.skip_reason}")
 
     if bad:
         lines += ["", "## 失败详情", ""]
@@ -201,7 +269,8 @@ def write_report(path: Path, layers: list[Layer], base: str, db_note: str, total
         "",
         "---",
         "",
-        "本报告由 `scripts/run_regression.py` 自动生成。回归使用临时库副本，不修改 `data/usage.db`。",
+        "本报告由 `scripts/run_regression.py` 自动生成。回归使用临时库副本，不修改 `data/usage.db`；",
+        "未找到 `data/usage.db` 时（全新克隆）自动生成合成演示数据，此时验收层会显式跳过。",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -227,7 +296,6 @@ def main() -> int:
 
     # 只有需要打 HTTP 的层才要求服务；只跑 pytest / privacy 时不必启服务
     needs_server = wanted is None or bool(wanted & {"smoke", "render", "acceptance"})
-    db_path_override = None
 
     node = shutil.which("node")
     if node is None:
@@ -246,30 +314,22 @@ def main() -> int:
     base = args.base
     db_note = "临时库副本"
     effective_db = config_db_path()
+    demo_mode = False
 
     try:
         # ---------------- 准备库与服务
         if not needs_server:
             print("所选层不需要服务，跳过启动。")
-            if not args.live_db:
-                tmpdir = Path(tempfile.mkdtemp(prefix="tum-regress-"))
-                effective_db = str(db_copy(Path(effective_db), tmpdir))
-                db_note = f"临时副本（源：{config_db_path()}）"
-            else:
-                db_note = f"真实库 {effective_db}"
+            effective_db, db_note, demo_mode = prepare_db(tmpdir, args.live_db)
             base = base or "（未使用，所选层不需要服务）"
         elif base is None:
             port = free_port()
             base = f"http://127.0.0.1:{port}"
+            tmpdir = Path(tempfile.mkdtemp(prefix="tum-regress-"))
+            effective_db, db_note, demo_mode = prepare_db(tmpdir, args.live_db)
+
             env = dict(os.environ)
-            if args.live_db:
-                db_note = f"真实库 {effective_db}"
-            else:
-                tmpdir = Path(tempfile.mkdtemp(prefix="tum-regress-"))
-                copy = db_copy(Path(effective_db), tmpdir)
-                effective_db = str(copy)
-                env["TUM_DB_PATH"] = effective_db
-                db_note = f"临时副本（源：{config_db_path()}）"
+            env["TUM_DB_PATH"] = effective_db
             env["TUM_PORT"] = str(port)
             env["TUM_HOST"] = "127.0.0.1"
             print(f"启动回归实例：{base}  库：{db_note}")
@@ -322,45 +382,64 @@ def main() -> int:
                 Layer("privacy", "隐私红线检查", [PY, "scripts/check_privacy.py", "--db", db_path])
             )
         if wanted is None or "acceptance" in wanted:
-            layers.append(
-                Layer(
-                    "acceptance",
-                    "试点验收七条",
-                    [
-                        PY,
-                        "scripts/pilot_acceptance.py",
-                        "--base",
-                        base,
-                        "--db",
-                        db_path,
-                        "--report",
-                        str(tmpdir / "试点验收报告.md") if tmpdir else str(ROOT / "data" / "试点验收报告.md"),
-                    ],
-                    timeout=900,
+            # 验收层校验的是「**真实**试点数据跑通了」，它的第 1 条就要求
+            # data_source='workbuddy' 且本月成本 > 0。合成数据下必然不成立——
+            # 这时显式跳过并写明原因，好过让它失败去污染结论（也不许改判定标准）。
+            if demo_mode:
+                layers.append(
+                    Layer("acceptance", "试点验收七条", []).skip(
+                        "合成演示数据，非真实本机转录；验收要求 data_source='workbuddy'"
+                        " 且本月成本 > 0。灌入真实数据后重跑即可解除。"
+                    )
                 )
-            )
+            else:
+                layers.append(
+                    Layer(
+                        "acceptance",
+                        "试点验收七条",
+                        [
+                            PY,
+                            "scripts/pilot_acceptance.py",
+                            "--base",
+                            base,
+                            "--db",
+                            db_path,
+                            "--report",
+                            str(tmpdir / "试点验收报告.md") if tmpdir else str(ROOT / "data" / "试点验收报告.md"),
+                        ],
+                        timeout=900,
+                    )
+                )
 
         # ---------------- 跑
         started = time.time()
         for lx in layers:
+            if lx.skipped:
+                continue
             run_layer(lx)
             lx.headline = pick_headline(lx.key, lx.output)
         total = time.time() - started
 
         for lx in layers:
-            print(f"  {'PASS' if lx.ok else 'FAIL'}  {lx.title:22} {lx.seconds:6.1f}s  {lx.headline}")
+            mark = "SKIP" if lx.skipped else ("PASS" if lx.ok else "FAIL")
+            print(f"  {mark}  {lx.title:22} {lx.seconds:6.1f}s  {lx.headline}")
 
         write_report(report_path, layers, base, db_note, total)
 
         bad = [x for x in layers if not x.ok]
+        skipped = [x for x in layers if x.skipped]
+        ran = len(layers) - len(skipped)
+        skip_note = f"，{len(skipped)} 层跳过" if skipped else ""
         print("\n" + "=" * 72)
         if bad:
-            print(f"REGRESSION: FAIL  {len(bad)}/{len(layers)} 层未通过（总耗时 {total:.1f}s）")
+            print(f"REGRESSION: FAIL  {len(bad)}/{ran} 层未通过（总耗时 {total:.1f}s）")
             for lx in bad:
                 print(f"  - {lx.title}：退出码 {lx.rc}")
             print(f"\n报告：{report_path}")
             return 1
-        print(f"REGRESSION: PASS  {len(layers)}/{len(layers)} 层全部通过（总耗时 {total:.1f}s）")
+        print(f"REGRESSION: PASS  {ran}/{ran} 层全部通过{skip_note}（总耗时 {total:.1f}s）")
+        for lx in skipped:
+            print(f"  ⏭ 跳过 {lx.title}：{lx.skip_reason}")
         print(f"报告：{report_path}")
         return 0
 
