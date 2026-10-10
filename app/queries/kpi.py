@@ -22,6 +22,89 @@ from ..money import dec, money_str
 from .common import COST_EXPR, day_range, envelope, fetch_cost, month_range, price_lookup
 
 
+def _placeholder_notes(conn: sqlite3.Connection) -> list[str]:
+    """当前成本是否建立在占位价格上——是的话必须显式告诉用户（B-2）。
+
+    WorkBuddy 的模型名是内部代号，公共价格表匹配不上，成本是用
+    ``--apply-placeholder-prices`` 灌进来的**占位价格**算的。数字能验证
+    链路通，但**不代表真实账单**。这件事不能只写在 README 里。
+
+    判定依据是**价格版本串里含 placeholder**（占位价格专用版本号），
+    而不是 ``source``——占位价格与用户手工覆盖在库里的 source 都是
+    ``user``，只有版本串能区分这两者。用错信号会给出误导性的提示。
+    """
+    row = conn.execute(
+        "SELECT COUNT(DISTINCT pricing_version) AS c FROM price_table "
+        "WHERE pricing_version LIKE '%placeholder%'"
+    ).fetchone()
+    if not row or int(row["c"] or 0) == 0:
+        return []
+    return [
+        "当前部分模型用的是<b>占位价格</b>（非厂商官方报价），"
+        "成本数字仅用于验证链路<b>不代表真实账单</b>"
+    ]
+
+
+def _cache_provenance(
+    conn: sqlite3.Connection, lo: str, hi: str, layers: dict[str, int]
+) -> dict[str, Any]:
+    """说清楚缓存数字**从哪来、覆盖了多少**（B-1）。
+
+    这里有个容易误导人的坑：jsonl 不含缓存字段，缓存读是 traces 分摊来的，
+    而 traces 只覆盖部分会话。如果直接用「全库缓存读 ÷ 全库输入」，
+    未覆盖的请求会进分母却不进分子，命中率被**严重低估**
+    （实测会显示 43%，而真实会话级缓存率约 95%）。
+
+    所以这里给两个口径：
+    * ``hit_rate``：只按**有 trace 支撑**的请求算，反映真实缓存表现；
+    * ``coverage``：全库有多少比例的请求真的有 trace 支撑，必须跟着一起展示。
+    """
+    from ..sources.trace_cache import coverage_note
+
+    prov = coverage_note(conn)
+    cov = prov["coverage"]
+
+    if layers["cache_read"] <= 0:
+        return {
+            "cache_source": "none",
+            "cache_source_label": "未上报",
+            "cache_coverage": float(cov),
+            "cache_note": "该数据源不提供缓存 token 字段，故不给命中率数字",
+        }
+
+    # 有缓存支撑的样本内命中率（排除未覆盖请求对分母的污染）
+    row = conn.execute(
+        "SELECT COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(cache_read_tokens),0) AS c "
+        "FROM usage_fact WHERE ts_day BETWEEN ? AND ? AND cache_read_tokens > 0",
+        (lo, hi),
+    ).fetchone()
+    sample_i = int(row["i"] or 0)
+    sample_c = int(row["c"] or 0)
+    sample_rate = (sample_c / sample_i) if sample_i else 0.0
+
+    partial = cov < Decimal("1")
+    return {
+        "cache_source": "trace_estimate",
+        "cache_source_label": "由 traces 估算",
+        "cache_coverage": float(cov),
+        "cache_coverage_requests": prov["covered_requests"],
+        "cache_coverage_total": prov["total_requests"],
+        "sample_hit_rate": sample_rate,
+        "sample_hit_rate_label": f"{sample_rate * 100:.1f}%",
+        "cache_estimated": True,
+        "cache_note": (
+            f"缓存读由会话级traces 按缓存率分摊估算；有 trace 支撑的请求占 "
+            f"{float(cov) * 100:.0f}%（{prov['covered_requests']}/{prov['total_requests']}）。"
+            + (
+                "命中率按**有 trace 支撑的样本**计算——若用全库做分母，"
+                "未覆盖请求会把数字压低到失真。"
+                if partial
+                else ""
+            )
+        ),
+    }
+
+
 def build(conn: sqlite3.Connection, days: int = 7) -> dict[str, Any]:
     today = dt.date.today()
     m_lo, m_hi = month_range(today)
@@ -95,7 +178,18 @@ def build(conn: sqlite3.Connection, days: int = 7) -> dict[str, Any]:
     layers["total"] = sum(layers.values())
 
     # ---- 缓存 ----
-    hit = cache_hit_rate(layers["cache_read"], layers["input"])
+    # 命中率分母只取「有 trace 支撑」的请求。缓存读是分摊来的，
+    # 若拿全库输入当分母，未覆盖的请求会把命中率压到失真（实测 95% → 43%）。
+    prov = _cache_provenance(conn, m_lo, m_hi, layers)
+    sample_row = conn.execute(
+        "SELECT COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(cache_read_tokens),0) AS c "
+        "FROM usage_fact WHERE ts_day BETWEEN ? AND ? AND cache_read_tokens > 0",
+        (m_lo, m_hi),
+    ).fetchone()
+    if int(sample_row["c"] or 0) > 0 and int(sample_row["i"] or 0) > 0:
+        hit = Decimal(int(sample_row["c"])) / Decimal(int(sample_row["i"]))
+    else:
+        hit = cache_hit_rate(layers["cache_read"], layers["input"])
     rows = conn.execute(
         "SELECT model, COALESCE(SUM(cache_read_tokens),0) AS cr FROM usage_fact "
         "WHERE ts_day BETWEEN ? AND ? GROUP BY model",
@@ -112,6 +206,7 @@ def build(conn: sqlite3.Connection, days: int = 7) -> dict[str, Any]:
         "saved_usd": money_str(saved.value),
         "estimated": saved.is_estimated,
         "estimate_method": saved.method,
+        **_cache_provenance(conn, m_lo, m_hi, layers),
     }
 
     # ---- 单请求均成本 ----
@@ -132,6 +227,14 @@ def build(conn: sqlite3.Connection, days: int = 7) -> dict[str, Any]:
     return envelope(
         conn,
         north_star=north_star,
+        # 预算明细提到顶层：前端的预算设置弹窗要能直接回填日/月两个值，
+        # 放进 north_star 里会让前端多绕一层，接口契约也变得不直观。
+        budget_detail={
+            "daily_usd": money_str(dec(budget_daily_micro) / 1000000),
+            "monthly_usd": money_str(budget_monthly),
+            "currency": currency,
+        },
+        placeholder_prices=_placeholder_notes(conn),
         today=today_block,
         tokens=layers,
         cache=cache_block,

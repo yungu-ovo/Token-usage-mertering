@@ -204,6 +204,90 @@ def main() -> int:
     status, _ = fetch(opener, base + "/api/kpi", method="PUT", body={})
     report(status in (404, 405), "PUT /api/kpi 应被拒绝", str(status))
 
+    # ---------------------------------------------------------- 告警（C-1）
+    # 修复前告警引擎一直在写库，但前端从不调这个接口 —— P0 的「预算与告警」
+    # 在界面上是不闭环的。这里把契约钉死：列表、确认、以及未确认过滤。
+    status, body = fetch(opener, base + "/api/alerts?limit=5")
+    report(
+        status == 200 and isinstance(body.get("items"), list),
+        "GET /api/alerts 返回列表",
+        f"{status} {len(body.get('items', [])) if isinstance(body, dict) else '?'} 条",
+    )
+    status, body = fetch(opener, base + "/api/alerts?unacked=true&limit=5")
+    items = body.get("items", []) if isinstance(body, dict) else []
+    report(
+        status == 200 and all(not i.get("acknowledged") for i in items),
+        "GET /api/alerts?unacked=true 只返回未确认项",
+        f"{len(items)} 条",
+    )
+    if items:
+        first = items[0]
+        ack_id = first.get("id")
+        status, body = fetch(opener, base + f"/api/alerts/{ack_id}/ack", method="POST")
+        report(
+            status == 200 and body.get("acknowledged") is True,
+            "POST /api/alerts/{id}/ack 确认告警",
+            f"id={ack_id} → {status}",
+        )
+        # 确认后不该再出现在 unacked 列表里
+        _, after = fetch(opener, base + "/api/alerts?unacked=true&limit=50")
+        after_ids = {i.get("id") for i in (after.get("items", []) if isinstance(after, dict) else [])}
+        report(ack_id not in after_ids, "已确认告警不再出现在未确认列表", f"id={ack_id}")
+    else:
+        report(True, "当前无未确认告警，跳过 ack 往返")
+        report(True, "当前无未确认告警，跳过 ack 后复查")
+    status, _ = fetch(opener, base + "/api/alerts/999999/ack", method="POST")
+    report(status == 404, "确认不存在的告警应404", str(status))
+
+    # ---------------------------------------------------------- 缓存筛选（C-3）
+    # 洞察卡的 filter_cache 动作现在真去筛，这个参数必须被后端认下来
+    status, body = fetch(opener, base + "/api/requests?cache=read&limit=5")
+    ok = status == 200 and isinstance(body.get("items"), list)
+    if ok:
+        ok = all(int(i.get("cache_read_tokens", 0)) > 0 for i in body["items"])
+    report(ok, "GET /api/requests?cache=read 只返回有缓存读的记录", f"{status} {len(body.get('items', [])) if isinstance(body, dict) else '?'} 条")
+    status, _ = fetch(opener, base + "/api/requests?cache=bogus")
+    report(status == 422, "cache 参数走白名单校验", str(status))
+
+    # ---------------------------------------------------------- 口径字段（B-2）
+    status, kpi_body = fetch(opener, base + "/api/kpi?days=7")
+    detail = kpi_body.get("budget_detail") if isinstance(kpi_body, dict) else None
+    report(
+        status == 200
+        and isinstance(detail, dict)
+        and "daily_usd" in detail
+        and "monthly_usd" in detail,
+        "GET /api/kpi 返回 budget_detail（供界面回填预算）",
+        str(detail)[:90],
+    )
+    report(
+        status == 200 and isinstance(kpi_body.get("placeholder_prices"), list),
+        "GET /api/kpi 返回 placeholder_prices（占位价格提示）",
+        str(kpi_body.get("placeholder_prices"))[:90] if isinstance(kpi_body, dict) else "",
+    )
+
+    # ---------------------------------------------------------- 金额口径一致性
+    # 告警文案里的金额与 KPI 必须是同一口径的同一量级。
+    # 修复前库里残留过「本月预算已用 3663766.7%」这种被放大 1e6 倍的历史告警，
+    # 说明告警层曾把微美元当美元用；这条断言防止它再发生。
+    _, alerts_all = fetch(opener, base + "/api/alerts?limit=50")
+    mtd = kpi_body.get("mtd_cost") if isinstance(kpi_body, dict) else None
+    if mtd and alerts_all.get("items"):
+        real = float(mtd)
+        bad = []
+        for a in alerts_all["items"]:
+            if not str(a.get("message", "")).startswith("本月预算已用"):
+                continue
+            import re as _re
+
+            m = _re.search(r"（\$([0-9][0-9,]*(?:\.[0-9]+)?)\s*/", a["message"])
+            if not m:
+                continue
+            claimed = float(m.group(1).replace(",", ""))
+            if real > 0 and claimed > real * 1000:
+                bad.append(a["id"])
+        report(not bad, "告警金额与 KPI 同口径（无1e6 量级放大）", f"KPI=${real} 异常={bad}")
+
     # ---------------------------------------------------------- 前端页面
     # 根路径应重定向到看板，且页面必须真的去调 API（不是硬编码假数据）
     try:

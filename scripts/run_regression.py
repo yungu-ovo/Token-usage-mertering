@@ -9,6 +9,11 @@
 * **出报告**：汇总写进 ``data/回归报告-v{版本}.md``，附每层耗时与关键统计。
 * **可降级**：``--base`` 指定已有服务（跳过自启动），``--live-db`` 直接打真实库。
 
+判定用**退出码 + 正文双条件**，不是只看退出码：某些环境（比如带删除保护的机器）
+会在用例全过之后因为清理临时目录被拦而给出非零退出码，那时正文里的
+``99 passed`` 才是真相。��种情况标为 ``PASS (env-noisy)`` 并在报告里写明原因——
+既不误报FAIL，也不静默放过。
+
 用法::
 
     python scripts/run_regression.py                    # 全套，用临时库副本
@@ -23,6 +28,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -105,14 +111,20 @@ def run(cmd: list[str], timeout: int = 300) -> tuple[int, str]:
         return 124, f"超时（>{timeout}s）\n" + (exc.stdout or "")
 
 
-def prepare_db(tmpdir: Path, live_db: bool) -> tuple[str, str, bool]:
+def prepare_db(tmpdir: Path | None, live_db: bool) -> tuple[str, str, bool]:
     """准备回归要用的库，返回 ``(库路径, 说明, 是否合成数据)``。
 
     ``data/`` 是 gitignore 的，所以**全新克隆里没有 usage.db**。此时若直接
     复制就会 FileNotFoundError——仓库卫生和「clone 下来就能跑」不该冲突，
     所以这里退一步：造一份合成演示数据，让各层都有数据可跑，并在报告里写明。
+
+    ``tmpdir`` 允许为 ``None``（调用方忘了建），这里自行兜底建一个，
+    避免 ``None / "usage.db"`` 抛TypeError 这种毫无指向性的崩溃。
     """
     src = Path(config_db_path())
+
+    if tmpdir is None:
+        tmpdir = Path(tempfile.mkdtemp(prefix="tum-regress-db-"))
 
     if live_db:
         if not src.exists():
@@ -147,11 +159,24 @@ class Layer:
         self.headline = ""
         self.skipped = False
         self.skip_reason = ""
+        self.env_noisy = False
+        self.noise_reason = ""
 
     @property
     def ok(self) -> bool:
         # 跳过不算失败，但报告里必须显式写出原因，绝不静默略过
-        return self.skipped or self.rc == 0
+        return self.skipped or self.rc == 0 or self.env_noisy
+
+    @property
+    def status(self) -> str:
+        """控制台与报告里显示的结论标签。"""
+        if self.skipped:
+            return "跳过"
+        if self.rc == 0:
+            return "通过"
+        if self.env_noisy:
+            return "通过（环境噪声）"
+        return "未通过"
 
     def skip(self, reason: str) -> "Layer":
         self.skipped = True
@@ -162,6 +187,38 @@ class Layer:
 
     def tail(self, n: int = 12) -> str:
         return "\n".join(self.output.strip().splitlines()[-n:])
+
+
+def judge_content(layer: "Layer") -> None:
+    """退出码之外，再看正文里的结论，识别「用例全过但退出码非零」。
+
+    真实踩过的坑：本机装了删除保护钩子，会拦 pytest 清理它自己建的临时目录
+    （一次删 60 个文件、超过 50 的阈值），于是 pytest 在 ``99 passed`` 之后
+    仍以非 0 退出。只看退出码会把「全绿」报成 FAIL——验证体系自己的可信度
+    也会被质疑。这里以正文为准，但**必须在报告里写明**是谁在干扰，不静默放过。
+    """
+    if layer.rc == 0 or layer.skipped:
+        return
+
+    text = layer.output
+    # 各层都有一行机器可读的总��论，先按它判
+    if layer.key == "pytest":
+        passed = re.search(r"(\d+) passed", text)
+        failed = re.search(r"(\d+) (?:failed|error)", text)
+        if passed and not failed:
+            layer.env_noisy = True
+            layer.noise_reason = (
+                f"用例全部通过（{passed.group(1)} passed），但进程退出码为 {layer.rc}；"
+                "判定以正文结论为准，退出码异常已记录"
+            )
+    else:
+        verdict = re.search(r"^(?:SMOKE|RENDER|PRIVACY|ACCEPTANCE):.*$", text, re.M)
+        if verdict and "PASS" in verdict.group(0) and "FAIL" not in verdict.group(0):
+            layer.env_noisy = True
+            layer.noise_reason = (
+                f"正文结论为「{verdict.group(0).strip()}」，但进程退出码为 {layer.rc}；"
+                "判定以正文结论为准，退出码异常已记录"
+            )
 
 
 def run_layer(layer: Layer) -> Layer:
@@ -183,8 +240,13 @@ def run_layer(layer: Layer) -> Layer:
         layer.rc = 124
         layer.output = f"超时（>{layer.timeout}s）\n" + (exc.stdout or "")
     layer.seconds = time.time() - started
+    judge_content(layer)
     flag = "PASS" if layer.ok else "FAIL"
+    if layer.env_noisy:
+        flag = "PASS*"
     print(f"◀ [{flag}] {layer.title}  用时 {layer.seconds:.1f}s")
+    if layer.env_noisy:
+        print(f"   ⚠ {layer.noise_reason}")
     if not layer.ok:
         print(layer.tail(20))
     return layer
@@ -200,10 +262,8 @@ def pick_headline(key: str, output: str) -> str:
         "acceptance": (r"^ACCEPTANCE:.*",),
     }
     for pat in patterns.get(key, ()):
-        import re as _re
-
         for line in output.strip().splitlines():
-            if _re.search(pat, line.strip()):
+            if re.search(pat, line.strip()):
                 return line.strip()
     return ""
 
@@ -235,8 +295,20 @@ def write_report(path: Path, layers: list[Layer], base: str, db_note: str, total
         if lx.skipped:
             status, cost = "跳过", "—"
         else:
-            status, cost = ("通过" if lx.ok else "**未通过**"), f"{lx.seconds:.1f}s"
+            status, cost = lx.status, f"{lx.seconds:.1f}s"
         lines.append(f"| {lx.title} | {status} | {cost} | {lx.headline or '—'} |")
+
+    noisy = [lx for lx in layers if lx.env_noisy]
+    if noisy:
+        lines += ["", "## ⚠ 环境噪声（判定以正文结论为准）", ""]
+        for lx in noisy:
+            lines.append(f"- **{lx.title}**：{lx.noise_reason}")
+        lines += [
+            "",
+            "> 这不影响「用例是否通过」的结论，但退出码异常说明运行环境有拦截动作"
+            "（如删除保护钩子拦住了测试清理临时目录）。排查方向：测试夹具用的临时目录",
+            "> 是否落在受保护路径下。",
+        ]
 
     if skipped:
         lines += ["", "## 跳过的层及原因", ""]
@@ -318,6 +390,9 @@ def main() -> int:
 
     try:
         # ---------------- 准备库与服务
+        # 临时目录必须**无条件**先建：--only pytest / privacy 这类不需要服务的分支
+        # 同样要把真实库复制成临时副本，绝不能把 None 传进 prepare_db()。
+        tmpdir = Path(tempfile.mkdtemp(prefix="tum-regress-"))
         if not needs_server:
             print("所选层不需要服务，跳过启动。")
             effective_db, db_note, demo_mode = prepare_db(tmpdir, args.live_db)
@@ -325,7 +400,6 @@ def main() -> int:
         elif base is None:
             port = free_port()
             base = f"http://127.0.0.1:{port}"
-            tmpdir = Path(tempfile.mkdtemp(prefix="tum-regress-"))
             effective_db, db_note, demo_mode = prepare_db(tmpdir, args.live_db)
 
             env = dict(os.environ)

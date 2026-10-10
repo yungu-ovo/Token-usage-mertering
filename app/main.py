@@ -160,6 +160,7 @@ def api_requests(
     session_id: str | None = None,
     status: str | None = None,
     days: int | None = Query(default=None, ge=1, le=365),
+    cache: str | None = Query(default=None, pattern="^(read|write)$"),
 ) -> dict[str, Any]:
     with _conn() as conn:
         return details.requests(
@@ -172,6 +173,7 @@ def api_requests(
             session_id=session_id,
             status=status,
             days=days,
+            cache=cache,
         )
 
 

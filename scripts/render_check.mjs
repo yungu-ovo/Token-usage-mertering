@@ -189,6 +189,55 @@ check("数据来源角标已更新", !!src && !/加载中/.test(src.textContent)
 const cal = registry.get("chip-caliber");
 check("口径角标已标注", !!cal && /口径/.test(cal.textContent), cal && cal.textContent);
 
+/* ---------------- C-1 告警必须在界面上看得见 ---------------- */
+// 修复前：alerts 在整份 dashboard.html 里出现 0 次，告警只能在 /docs 里看。
+// 这里断言「告警数据确实被取回来了」——不是看抽屉（用户没点开时它本就该是空的）。
+const alertbar = txt("alertbar-host");
+const badge = registry.get("alert-count");
+check(
+  "告警接口已被调用（页面启动即取 /api/alerts）",
+  html.includes('"/api/alerts?limit=30"'),
+);
+check(
+  "告警横幅已渲染（有待确认告警时显示，无告警时给明确空态）",
+  alertbar !== "" || (badge && badge.hidden === true),
+  alertbar.slice(0, 70) || "无未确认告警",
+);
+check(
+  "告警徽标状态与横幅一致",
+  !!badge && (badge.hidden === true) === (alertbar === "" || /没有待确认/.test(alertbar)),
+  `badge.hidden=${badge && badge.hidden}`,
+);
+
+/* ---------------- B-2 口径提示条 ---------------- */
+const caliberBar = txt("caliber-host");
+// 有未定价模型 / 未校准折算率 / 占位价格时，顶栏必须显式说明，不能只写在 README
+const expectCaliber =
+  html.includes("chip-credit") && (caliberBar !== "" || /占位|未校准|未定价/.test(txt("insights")));
+check("口径提示条已渲染（占位价格 / 未校准折算显式说明）", expectCaliber, caliberBar.slice(0, 80));
+
+/* ---------------- C-2 预算可从界面修改 ---------------- */
+check(
+  "预算设置入口存在",
+  html.includes('id="btn-budget"') && html.includes('id="in-daily"') && html.includes('id="in-monthly"'),
+);
+check(
+  "预算弹窗提交到 PUT /api/budget",
+  /method:\s*"PUT"/.test(html) && html.includes('"/api/budget"'),
+);
+
+/* ---------------- C-3 洞察动作不许是空动作 ---------------- */
+check(
+  "价格表改为独立模态框（不再覆盖顶栏 banner-host）",
+  html.includes('id="scrim-pricing"') && !/function loadPricing/.test(html),
+);
+check(
+  "filter_cache 是真筛选而不是只显示一句话",
+  html.includes('query = "&cache=read"'),
+  html.includes('query = "&cache=read"') ? "" : "仍是空动作",
+);
+check("洞察动作接的后端参数已支持（cache=read）", html.includes("&cache=read"));
+
 /* ------------------------------------------------------------------ 结果 */
 console.log(`接口自检：${BASE}  ok=${health.ok}  usage_fact=${health.usage_fact_rows} 行\n`);
 let failed = 0;

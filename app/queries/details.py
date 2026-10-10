@@ -56,6 +56,7 @@ def requests(
     session_id: str | None = None,
     status: str | None = None,
     days: int | None = None,
+    cache: str | None = None,
 ) -> dict[str, Any]:
     where: list[str] = []
     params: list[Any] = []
@@ -75,6 +76,12 @@ def requests(
     if status:
         where.append("status = ?")
         params.append(status)
+    if cache == "read":
+        # 只看真正有缓存读的记录。洞察卡的「查看缓存明细」用它，
+        # 避免出现「点了按钮却什么都没筛」的假动作。
+        where.append("cache_read_tokens > 0")
+    elif cache == "write":
+        where.append("cache_write_tokens > 0")
     if days:
         import datetime as dt
 

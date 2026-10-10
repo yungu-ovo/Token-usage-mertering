@@ -523,12 +523,54 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 # ------------------------------------------------------------------ main
+def cmd_backfill_cache(args: argparse.Namespace) -> int:
+    """从 traces 回填缓存 token（B-1：jsonl 不含缓存字段）。
+
+    默认只演练不写，加 ``--apply`` 才落库。
+    """
+    from app import db
+    from app.sources.trace_cache import backfill
+
+    apply = bool(getattr(args, "apply", False))
+    with db.session() as conn:
+        stats = backfill(conn, apply=apply)
+        if not apply:
+            conn.rollback()
+
+    mode = "已写入" if apply else "演练（加 --apply 才落库）"
+    print(f"== 缓存 token 回填 · {mode} ==")
+    print(f"trace 覆盖会话：{stats['sessions']} 个")
+    print(f"待补记录：{stats['requests']} 行")
+    print(f"缓存读合计：{stats['cache_read_tokens']:,} tokens")
+    print(f"其中片段覆盖（低可信）：{stats['low_coverage_sessions']} 个会话")
+    if stats["samples"]:
+        print("\n样本（按会话）：")
+        print(f"  {'会话':<38}{'traces':>7}{'缓存率':>8}{'覆盖率':>8}{'记录':>7}")
+        for s in stats["samples"]:
+            flag = "" if s["trusted"] else "  ← 片段覆盖"
+            print(
+                f"  {s['session_id']:<38}{s['trace_files']:>7}"
+                f"{s['rate_pct']:>7.1f}%{s['coverage_pct']:>7.1f}%{s['requests']:>7}{flag}"
+            )
+    print(
+        "\n注意：命中率按**有 trace 支撑的请求**计算。若用全库输入做分母，"
+        "未覆盖的请求会把数字压低到失真。"
+    )
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="WorkBuddy 用量灌数（只读原始数据）")
     ap.add_argument("--inspect", action="store_true", help="只统计字段与分布，不写任何东西")
     ap.add_argument("--dry-run", action="store_true", help="解析并打印归一结果，不落库")
     ap.add_argument("--ingest", action="store_true", help="真正写入数据库")
     ap.add_argument("--verify", action="store_true", help="与 traces 交叉校验")
+    ap.add_argument(
+        "--backfill-cache",
+        action="store_true",
+        help="从 traces 回填缓存 token（默认演练，配 --apply 才落库）",
+    )
+    ap.add_argument("--apply", action="store_true", help="配合 --backfill-cache 真正写入")
     ap.add_argument("--since", default=None, help="只处理该日期之后的记录（YYYY-MM-DD）")
     ap.add_argument("--limit", type=int, default=None, help="只处理前 N 条（配合 --dry-run）")
     ap.add_argument("--api", default=None, help="改为 POST 到这个地址，如 http://127.0.0.1:8787")
@@ -544,9 +586,11 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    if not any([args.inspect, args.dry_run, args.ingest, args.verify]):
+    if not any([args.inspect, args.dry_run, args.ingest, args.verify, args.backfill_cache]):
         args.inspect = True
 
+    if args.backfill_cache:
+        return cmd_backfill_cache(args)
     if args.inspect:
         return cmd_inspect(args)
     if args.dry_run:

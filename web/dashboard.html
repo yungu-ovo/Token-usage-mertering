@@ -106,6 +106,10 @@
   .card.star::after{content:"";position:absolute;inset:0 0 auto 0;height:2px;
     background:linear-gradient(90deg,var(--warn),rgba(245,158,11,0))}
   .kpi-label{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:7px}
+  .linkbtn{appearance:none;background:transparent;border:1px solid var(--border-strong);
+    color:var(--muted-2);border-radius:6px;padding:1px 7px;font:inherit;font-size:11px;
+    cursor:pointer;margin-left:auto}
+  .linkbtn:hover{color:var(--c1);border-color:var(--c1)}
   .kpi-value{
     font-family:var(--font-mono);font-variant-numeric:tabular-nums;
     font-size:26px;font-weight:600;letter-spacing:-.035em;margin:8px 0 0;
@@ -225,6 +229,73 @@
     border:1.6px solid currentColor;border-top-color:transparent;animation:sp .7s linear infinite}
   @keyframes sp{to{transform:rotate(360deg)}}
 
+  /* ================= 告警条 ================= */
+  .alertbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    padding:9px 13px;border-radius:var(--r-md);margin-bottom:14px;
+    border:1px solid var(--border-strong);background:rgba(148,163,184,.06);
+    color:var(--muted);font-size:12.5px;line-height:1.5}
+  .alertbar.severe{border-color:rgba(239,68,68,.42);background:rgba(239,68,68,.09);color:#FCA5A5}
+  .alertbar.warn{border-color:rgba(245,158,11,.42);background:rgba(245,158,11,.09);color:#FCD34D}
+  .alertbar .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+  .alertbar .msg{flex:1;min-width:180px}
+  .alertbar .abtn{appearance:none;cursor:pointer;background:rgba(255,255,255,.06);
+    border:1px solid var(--border-strong);color:inherit;border-radius:7px;
+    padding:4px 11px;font:inherit;font-size:12px;white-space:nowrap}
+  .alertbar .abtn:hover{background:rgba(255,255,255,.12)}
+
+  /* ================= 口径提示条（B-2） ================= */
+  .caliberbar{display:flex;align-items:flex-start;gap:9px;flex-wrap:wrap;
+    padding:8px 13px;border-radius:var(--r-md);margin-bottom:14px;
+    border:1px solid rgba(245,158,11,.34);background:rgba(245,158,11,.07);
+    color:#FCD34D;font-size:12px;line-height:1.55}
+  .caliberbar b{font-weight:500}
+  .caliberbar .dim{color:var(--muted)}
+
+  /* ================= 抽屉 / 模态框 ================= */
+  .scrim{position:fixed;inset:0;background:rgba(2,6,23,.62);z-index:60;
+    display:flex;align-items:flex-start;justify-content:flex-end;padding:56px 18px 18px}
+  .scrim.center{align-items:center;justify-content:center;padding:24px}
+  .scrim[hidden]{display:none}
+  .drawer{width:min(560px,100%);max-height:calc(100vh - 74px);overflow:auto;
+    background:#111A2E;border:1px solid var(--border-strong);border-radius:var(--r-lg);
+    box-shadow:0 18px 48px rgba(0,0,0,.5)}
+  .drawer.wide{width:min(720px,100%)}
+  .drawer-head{display:flex;align-items:center;gap:10px;padding:15px 17px;
+    border-bottom:1px solid var(--border);position:sticky;top:0;background:#111A2E;z-index:1}
+  .drawer-head h3{margin:0;font-size:14px;font-weight:500;flex:1}
+  .drawer-head .x{appearance:none;background:transparent;border:1px solid var(--border-strong);
+    color:var(--muted);border-radius:7px;width:28px;height:28px;cursor:pointer;font-size:15px;line-height:1}
+  .drawer-head .x:hover{color:var(--fg);border-color:var(--muted)}
+  .drawer-body{padding:15px 17px}
+  .drawer-body table{min-width:0}
+
+  .alert-item{display:flex;gap:11px;padding:11px 0;border-bottom:1px dashed var(--border)}
+  .alert-item:last-child{border-bottom:0}
+  .alert-item .lv{flex:none;font-size:11px;padding:2px 7px;border-radius:5px;
+    border:1px solid var(--border-strong);height:fit-content;font-family:var(--font-mono)}
+  .alert-item .lv.severe{color:#FCA5A5;border-color:rgba(239,68,68,.42);background:rgba(239,68,68,.1)}
+  .alert-item .lv.warn{color:#FCD34D;border-color:rgba(245,158,11,.42);background:rgba(245,158,11,.1)}
+  .alert-item .bd{flex:1;min-width:0}
+  .alert-item .bd .msg{font-size:12.5px;line-height:1.55;color:var(--fg);word-break:break-word}
+  .alert-item .bd .mt{font-size:11px;color:var(--muted-2);margin-top:4px;font-family:var(--font-mono)}
+  .alert-item.acked{opacity:.5}
+  .alert-item .ackbtn{appearance:none;cursor:pointer;align-self:flex-start;
+    background:rgba(255,255,255,.06);border:1px solid var(--border-strong);
+    color:var(--muted);border-radius:6px;padding:3px 9px;font:inherit;font-size:11.5px}
+  .alert-item .ackbtn:hover{color:var(--fg)}
+  .alert-item .ackbtn[disabled]{opacity:.45;cursor:default}
+
+  .field{display:block;margin-bottom:12px}
+  .field span{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}
+  .field input{width:100%;background:rgba(255,255,255,.05);border:1px solid var(--border-strong);
+    color:var(--fg);border-radius:8px;padding:8px 11px;font:inherit;
+    font-family:var(--font-mono);font-size:13px}
+  .field input:focus{outline:none;border-color:var(--c1)}
+  .form-actions{display:flex;gap:9px;justify-content:flex-end;margin-top:15px;
+    padding-top:14px;border-top:1px dashed var(--border)}
+  .form-actions .primary{background:rgba(129,140,248,.16);border-color:rgba(129,140,248,.5);color:var(--c1)}
+  .empty{padding:26px 10px;text-align:center;color:var(--muted-2);font-size:12.5px}
+
   @media (max-width:1180px){
     .kpi-row{grid-template-columns:1fr 1fr 1fr}
     .card.star{grid-column:span 3}
@@ -269,6 +340,11 @@
 
     <span class="chip" id="chip-fx" title="汇率日期" hidden>—</span>
 
+    <button class="icon-btn" type="button" id="btn-alerts" title="查看告警列表">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      <span id="alert-count" hidden>0</span>
+    </button>
+
     <div class="seg" role="group" aria-label="统计区间">
       <button type="button" data-range="7" aria-pressed="false">7 天</button>
       <button type="button" data-range="30" aria-pressed="true">30 天</button>
@@ -287,6 +363,10 @@
 </div>
 <div class="wrap">
 
+  <div id="banner-host"></div>
+  <div id="alertbar-host"></div>
+  <div id="caliber-host"></div>
+
   <!-- ============ KPI 区（北极星 + 4 张一级指标，共 5 张） ============ -->
   <section aria-label="核心指标">
     <div class="kpi-row">
@@ -295,6 +375,8 @@
         <div class="kpi-label">
           本月累计成本
           <span class="tag danger" id="forecast-tag">超支预警</span>
+          <button type="button" class="linkbtn" id="btn-budget"
+                  title="设置日预算与月预算">设置预算</button>
         </div>
         <div class="kpi-value" id="mtd-cost">$0.00 <span class="unit">/ $300 预算</span></div>
         <div class="kpi-meta">
@@ -465,6 +547,60 @@
 
 </div>
 
+<!-- ============ 告警抽屉 ============ -->
+<div class="scrim" id="scrim-alerts" hidden>
+  <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="alerts-title">
+    <div class="drawer-head">
+      <h3 id="alerts-title">告警</h3>
+      <button class="x" type="button" data-close="scrim-alerts" aria-label="关闭">&times;</button>
+    </div>
+    <div class="drawer-body" id="alerts-body">
+      <div class="empty">加载中…</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 预算设置 ============ -->
+<div class="scrim center" id="scrim-budget" hidden>
+  <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="budget-title">
+    <div class="drawer-head">
+      <h3 id="budget-title">设置预算</h3>
+      <button class="x" type="button" data-close="scrim-budget" aria-label="关闭">&times;</button>
+    </div>
+    <div class="drawer-body">
+      <label class="field">
+        <span>日预算（USD）</span>
+        <input type="number" id="in-daily" min="0" step="0.01" inputmode="decimal">
+      </label>
+      <label class="field">
+        <span>月预算（USD）</span>
+        <input type="number" id="in-monthly" min="0" step="0.01" inputmode="decimal">
+      </label>
+      <p style="font-size:12px;color:var(--muted-2);margin:0;line-height:1.6">
+        预算只影响进度条与告警阈值，不会改动任何历史成本。
+        越过 75% / 90% / 100% 三档时生成告警，可在顶栏「告警」里确认。
+      </p>
+      <div class="form-actions">
+        <button class="icon-btn" type="button" data-close="scrim-budget">取消</button>
+        <button class="icon-btn primary" type="button" id="btn-budget-save">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 价格表 ============ -->
+<div class="scrim center" id="scrim-pricing" hidden>
+  <div class="drawer wide" role="dialog" aria-modal="true" aria-labelledby="pricing-title">
+    <div class="drawer-head">
+      <h3 id="pricing-title">价格表</h3>
+      <button class="x" type="button" data-close="scrim-pricing" aria-label="关闭">&times;</button>
+    </div>
+    <div class="drawer-body" id="pricing-body">
+      <div class="empty">加载中…</div>
+    </div>
+  </div>
+</div>
+
 <script>
 (function(){
   "use strict";
@@ -481,6 +617,7 @@
     trend: null, tokens: null,
     mixModel: null, mixProj: null,
     insights: null, reqs: null,
+    alerts: null,
     tableView: { label: "最近 8 条记录", query: "" },
     errors: []
   };
@@ -593,7 +730,9 @@
       settle(fetchJSON("/api/mix?dim=model&days=" + days)),
       settle(fetchJSON("/api/mix?dim=project&days=" + days)),
       settle(fetchJSON("/api/insights?days=" + days)),
-      settle(fetchJSON("/api/requests?days=" + days + "&limit=8&offset=0"))
+      settle(fetchJSON("/api/requests?days=" + days + "&limit=8&offset=0")),
+      // 告警失败不该拖垮看板（它只是提示条），所以单独兜住不进 errors
+      fetchJSON("/api/alerts?limit=30").catch(function(){ return null; })
     ];
 
     return Promise.all(jobs).then(function(res){
@@ -602,6 +741,7 @@
         if (r.ok) state[slots[i]] = r.v;
         else state.errors.push(r.e);
       });
+      state.alerts = res[9] || state.alerts;
       // 汇率表：取 USD->CNY 的一条
       if (state.fx && state.fx.rates && state.fx.rates.length){
         state.fx.rate = state.fx.rates[0].rate;
@@ -616,12 +756,84 @@
   function renderAll(){
     renderChips();
     showBanner();
+    renderAlerts();
+    renderCaliberNote();
     renderKPI();
     renderTrend();
     renderTokens();
     renderMix();
     renderInsights();
     renderTable();
+  }
+
+  /* ================= 告警（C-1：引擎一直在跑，界面必须看得见） ================= */
+  function activeAlerts(){
+    if (!state.alerts || !state.alerts.items) return [];
+    return state.alerts.items.filter(function(a){ return !a.acknowledged; });
+  }
+  function renderAlerts(){
+    var list = activeAlerts();
+    var badge = el("alert-count");
+    if (badge){
+      if (list.length){ badge.textContent = String(list.length); badge.hidden = false; }
+      else { badge.hidden = true; }
+    }
+
+    var host = el("alertbar-host");
+    if (!host) return;
+    if (!state.alerts){ host.innerHTML = ""; return; }
+    if (!list.length){
+      host.innerHTML = state.alerts.items.length
+        ? '<div class="alertbar"><span class="dot"></span><span class="msg">当前没有待确认的告警。历史共 ' +
+          state.alerts.items.length + ' 条。</span></div>'
+        : "";
+      return;
+    }
+    // 取最严重的一条做横幅，全部列表进抽屉
+    var worst = list.some(function(a){ return a.level === "severe"; }) ? "severe" : "warn";
+    var top = list.filter(function(a){ return a.level === worst; })[0] || list[0];
+    host.innerHTML = '<div class="alertbar ' + worst + '">' +
+      '<span class="dot"></span>' +
+      '<span class="msg">' + esc(top.message) +
+      (list.length > 1 ? ' <span style="opacity:.75">（另有 ' + (list.length - 1) + ' 条）</span>' : '') +
+      '</span>' +
+      '<button class="abtn" type="button" id="btn-open-alerts">查看全部 ' + list.length + ' 条</button>' +
+      '<button class="abtn" type="button" data-close="scrim-alerts">知道了</button>' +
+      '</div>';
+    var open = el("btn-open-alerts");
+    if (open) open.addEventListener("click", openAlerts);
+  }
+
+  /* ================= 口径提示条（B-2） ================= */
+  function renderCaliberNote(){
+    var host = el("caliber-host");
+    if (!host) return;
+    var meta = state.meta || {};
+    var kpi = state.kpi || {};
+    var notes = [];
+
+    var unknown = null;
+    if (state.insights && state.insights.cards){
+      state.insights.cards.forEach(function(c){
+        if (c.action && c.action.kind === "open_pricing" && /未定价/.test(c.title || "")) unknown = c;
+      });
+    }
+    if (unknown) notes.push("部分模型未进价格表，其成本<b>记为 0</b>并单独标记（不静默计价）");
+
+    if (meta.credit_rate && meta.credit_rate.calibrated === false){
+      notes.push("厂商积分折算率<b>未校准</b>，厂商口径成本仅供参考");
+    }
+    if (kpi.placeholder_prices) notes = notes.concat(kpi.placeholder_prices);
+
+    if (!notes.length){ host.innerHTML = ""; return; }
+    host.innerHTML = '<div class="caliberbar">' +
+      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="flex:none;margin-top:1px"><circle cx="12" cy="12" r="9"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>' +
+      '<span><b>口径提示：</b>' + notes.join("；") +
+      '。拿到真实单价后可调<b>价格表</b>（只新增版本，不改历史成本）。</span>' +
+      '<button class="abtn" type="button" id="btn-open-pricing" style="color:inherit">查看价格表</button>' +
+      '</div>';
+    var pb = el("btn-open-pricing");
+    if (pb) pb.addEventListener("click", openPricing);
   }
 
   /* ================= 顶栏角标 ================= */
@@ -731,8 +943,15 @@
     var crTok = num(ca.cache_read_tokens);
     if (crTok > 0){
       el("hit-rate").textContent = pct(ca.hit_rate, 1);
-      el("hit-rate").title = "";
-      el("hit-meta").innerHTML = '缓存读 <b class="num">' + mTok(crTok) + '</b> · ' + esc(ca.estimate_method);
+      el("hit-rate").title = ca.cache_note || "";
+      // B-1：缓存读来自 traces 分摊估算，必须把覆盖率一起亮出来，
+      // 否则用户会把「命中率」当成全量口径，而它其实只覆盖部分请求。
+      var cov = ca.cache_coverage;
+      var covTxt = (ca.cache_coverage_total !== undefined && num(cov) < 1)
+        ? '<span class="wn">· traces 覆盖 ' + (num(cov) * 100).toFixed(0) + '% 请求</span>'
+        : "";
+      el("hit-meta").innerHTML = '缓存读 <b class="num">' + mTok(crTok) + '</b> · ' +
+        esc(ca.estimate_method || "") + covTxt;
     } else {
       el("hit-rate").textContent = "—";
       el("hit-rate").title = "本区间未上报缓存读 token，无法计算命中率";
@@ -1056,14 +1275,16 @@
       query = "&days=1";
       label = "筛选：仅最近 1 天";
     } else if (kind === "open_pricing"){
-      loadPricing();
+      openPricing();
       return;
     } else if (kind === "reingest"){
       doRefresh();
       return;
     } else if (kind === "filter_cache"){
-      label = "缓存明细：见上方「缓存命中率」卡片与 Token 分层图";
-      query = "";
+      // C-3 修法：原来这里只显示一句话、什么都不筛。现在真去明细表里
+      // 筛出有缓存读的记录 —— 点了必须真的有反应，否则不如没有这个按钮。
+      query = "&cache=read";
+      label = "筛选：仅看有缓存读的记录";
     }
     state.tableView = {
       label: label + "（近 " + state.range + " 天）",
@@ -1138,12 +1359,24 @@
       });
   }
 
-  /* ================= 价格表面板 ================= */
-  function loadPricing(){
-    var host = el("banner-host");
-    if (!host) return;
-    host.innerHTML = '<div class="banner" style="border-color:var(--border-strong);background:rgba(148,163,184,.06);color:var(--muted)">' +
-      '<b>正在读取价格表…</b></div>';
+  /* ================= 模态框 / 抽屉通用 ================= */
+  function openScrim(id){
+    var s = el(id);
+    if (s) s.hidden = false;
+    var f = s && s.querySelector("input, button");
+    if (f) try{ f.focus(); }catch(e){}
+  }
+  function closeScrim(id){
+    var s = el(id);
+    if (s) s.hidden = true;
+  }
+
+  /* ================= 价格表（C-3：改为独立模态框，不再覆盖顶栏） ================= */
+  function openPricing(){
+    var body = el("pricing-body");
+    openScrim("scrim-pricing");
+    if (!body) return;
+    body.innerHTML = skeleton(4);
     fetchJSON("/api/pricing").then(function(d){
       var rows = d.models.map(function(m){
         return "<tr><td>" + esc(m.model) + "</td><td>" + esc(m.pricing_version) + "</td>" +
@@ -1154,19 +1387,117 @@
           "<td>" + esc(m.source) + "</td></tr>";
       }).join("");
       var unknown = d.unknown_models || [];
-      host.innerHTML = '<div class="banner" style="border-color:var(--border-strong);background:rgba(148,163,184,.06);color:var(--muted)">' +
-        "<b>价格表 v" + esc(d.current_version) + "</b> · 单价单位 USD / 百万 token" +
+      body.innerHTML =
+        '<p style="margin:0 0 10px;font-size:12px;color:var(--muted-2);line-height:1.6">' +
+        "当前版本 <b>v" + esc(d.current_version) + "</b> · 单价单位 USD / 百万 token · " +
+        "调价只新增版本，<b>不改写历史成本</b>。" +
         (unknown.length
-          ? "<br>未识别模型 " + unknown.length + " 个：" + unknown.map(function(u){
-              return esc(u.model_raw) + "（" + num(u.hit_count) + " 次）";
-            }).join("、")
+          ? '<br><span class="wn">未识别模型 ' + unknown.length + " 个（成本记0，已单独标记）：" +
+            unknown.map(function(u){ return esc(u.model_raw) + "（" + num(u.hit_count) + " 次）"; }).join("、") +
+            "</span>"
           : "") +
-        '<div style="max-height:230px;overflow:auto;margin-top:9px">' +
-          '<table style="min-width:0"><thead><tr><th>模型</th><th>版本</th><th class="r">输入</th><th class="r">输出</th><th class="r">缓存读</th><th class="r">缓存写</th><th>来源</th></tr></thead>' +
-          "<tbody>" + rows + "</tbody></table></div>" +
-      "</div>";
+        "</p>" +
+        '<div style="max-height:52vh;overflow:auto">' +
+        '<table style="min-width:0"><thead><tr><th>模型</th><th>版本</th><th class="r">输入</th>' +
+        '<th class="r">输出</th><th class="r">缓存读</th><th class="r">缓存写</th><th>来源</th></tr></thead>' +
+        "<tbody>" + rows + "</tbody></table></div>";
     }).catch(function(e){
-      host.innerHTML = '<div class="banner">读取价格表失败：<code>' + esc(e.message || e) + '</code></div>';
+      body.innerHTML = '<div class="banner">读取价格表失败：<code>' + esc(e.message || e) + "</code></div>";
+    });
+  }
+
+  /* ================= 告警抽屉（C-1） ================= */
+  function openAlerts(){
+    var body = el("alerts-body");
+    openScrim("scrim-alerts");
+    if (!body) return;
+    body.innerHTML = skeleton(4);
+    fetchJSON("/api/alerts?limit=50").then(function(d){
+      state.alerts = d;
+      renderAlerts();
+      paintAlerts(d.items || []);
+    }).catch(function(e){
+      body.innerHTML = '<div class="banner">读取告警失败：<code>' + esc(e.message || e) + "</code></div>";
+    });
+  }
+  function paintAlerts(items){
+    var body = el("alerts-body");
+    if (!body) return;
+    if (!items.length){
+      body.innerHTML = '<div class="empty">没有告警。预算与消耗都在阈值内。</div>';
+      return;
+    }
+    body.innerHTML = items.map(function(a){
+      var when = String(a.fired_at || "").replace("T", " ");
+      return '<div class="alert-item' + (a.acknowledged ? " acked" : "") + '" data-id="' + num(a.id) + '">' +
+        '<span class="lv ' + esc(a.level || "") + '">' + esc(a.level || "") + "</span>" +
+        '<div class="bd"><div class="msg">' + esc(a.message) + "</div>" +
+        '<div class="mt">' + esc(a.category || "") + " · " + esc(when) +
+        (a.value ? " · 实测 " + esc(money(a.value)) : "") +
+        (a.threshold ? " / 阈值 " + esc(money(a.threshold)) : "") + "</div></div>" +
+        (a.acknowledged
+          ? '<button class="ackbtn" disabled>已确认</button>'
+          : '<button class="ackbtn" data-ack="' + num(a.id) + '">确认</button>') +
+        "</div>";
+    }).join("");
+    Array.prototype.forEach.call(body.querySelectorAll("[data-ack]"), function(btn){
+      btn.addEventListener("click", function(){
+        var id = btn.getAttribute("data-ack");
+        btn.disabled = true;
+        btn.textContent = "确认中…";
+        fetchJSON("/api/alerts/" + id + "/ack", { method: "POST" })
+          .then(function(){ return fetchJSON("/api/alerts?limit=50"); })
+          .then(function(d){
+            state.alerts = d;
+            renderAlerts();
+            paintAlerts(d.items || []);
+          })
+          .catch(function(e){
+            btn.disabled = false;
+            btn.textContent = "确认";
+            state.errors = ["确认告警失败：" + (e.message || e)];
+            showBanner();
+          });
+      });
+    });
+  }
+
+  /* ================= 预算设置（C-2） ================= */
+  function openBudget(){
+    openScrim("scrim-budget");
+    var d = el("in-daily"), m = el("in-monthly");
+    var kpi = state.kpi || {};
+    // budget_detail 在响应顶层（不放north_star 里，前端少绕一层）
+    var b = kpi.budget_detail;
+    if (b){
+      d.value = num(b.daily_usd) ? String(num(b.daily_usd)) : "";
+      m.value = num(b.monthly_usd) ? String(num(b.monthly_usd)) : "";
+    }
+  }
+  function saveBudget(){
+    var btn = el("btn-budget-save");
+    var d = num(el("in-daily").value);
+    var m = num(el("in-monthly").value);
+    if (!(d > 0) || !(m > 0)){
+      state.errors = ["日预算与月预算都必须大于 0"];
+      showBanner();
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "保存中…";
+    fetchJSON("/api/budget", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ daily_usd: String(d), monthly_usd: String(m) })
+    }).then(function(){
+      closeScrim("scrim-budget");
+      return load(state.range);
+    }).catch(function(e){
+      state.errors = ["保存预算失败：" + (e.message || e)];
+      showBanner();
+    }).then(function(){
+      btn.disabled = false;
+      btn.textContent = "保存";
     });
   }
 
@@ -1234,6 +1565,29 @@
   el("btn-refresh").addEventListener("click", doRefresh);
   el("btn-export").addEventListener("click", exportCSV);
 
+  // C-1 告警：顶栏按钮 + 横幅里的「查看全部」
+  el("btn-alerts").addEventListener("click", openAlerts);
+
+  // C-2 预算设置
+  el("btn-budget").addEventListener("click", openBudget);
+  el("btn-budget-save").addEventListener("click", saveBudget);
+
+  // C-3 价格表：洞察卡与口径条都走这一个模态框
+  // 用事件委托：告警横幅里的「知道了」是动态生成的，绑不上监听器
+  document.addEventListener("click", function(ev){
+    var t = ev.target.closest ? ev.target.closest("[data-close]") : null;
+    if (t) closeScrim(t.getAttribute("data-close"));
+  });
+  Array.prototype.forEach.call(document.querySelectorAll(".scrim"), function(s){
+    s.addEventListener("click", function(ev){
+      if (ev.target === s) s.hidden = true;   // 点遮罩关闭
+    });
+  });
+  document.addEventListener("keydown", function(ev){
+    if (ev.key !== "Escape") return;
+    Array.prototype.forEach.call(document.querySelectorAll(".scrim"), function(s){ s.hidden = true; });
+  });
+
   // 币种切换（点汇率角标）
   el("chip-fx").addEventListener("click", function(){
     state.currency = state.currency === "USD" ? "CNY" : "USD";
@@ -1241,13 +1595,8 @@
   });
 
   /* ================= 启动 ================= */
-  // 顶栏加一行错误提示位
-  (function(){
-    var wrap = document.querySelector(".wrap");
-    var host = document.createElement("div");
-    host.id = "banner-host";
-    wrap.insertBefore(host, wrap.firstChild);
-  })();
+  // banner-host / alertbar-host / caliber-host 已在 HTML 里静态声明，
+  // 不再动态插入——动态 createElement 会与静态节点重复，导致提示条渲染两次。
 
   load(30);
 })();

@@ -6,7 +6,7 @@
 本仓库是把 `Token消耗看板-产品方案.md`（产品设计）与开发计划落成可运行代码的实现，试点数据源是
 本机 WorkBuddy 的会话转录。
 
-- 版本：`0.1.0` ｜ 范围：**仅 P0**（信息架构里标 P1/P2 的一律不做）
+- 版本：`0.2.0` ｜ 范围：**仅 P0**（信息架构里标 P1/P2 的一律不做）
 - 后端：Python 3.11+ / FastAPI / SQLite（WAL）/ APScheduler（进程内）
 - 前端：单文件 HTML + 原生 JS + 内联 SVG，**零构建、零 CDN**
 - 金额存储：**INTEGER 微美元**（1e-6 USD），全链路 `Decimal`，禁用二进制浮点
@@ -31,19 +31,22 @@ app/
   main.py           路由 + 静态前端挂载
   pricing/          价格表：默认价 / 别名 / 归一器 / 版本化读写
   queries/          kpi · trend · tokens · mix · insights · details · common
-  sources/          workbuddy_jsonl.py（解析器）
-web/dashboard.html  看板（读真实 API）
+  sources/          workbuddy_jsonl.py（解析器）· workbuddy_trace.py（校验）
+                    trace_cache.py（按会话缓存率回填缓存读，幂等）
+web/dashboard.html  看板（读真实API）
 scripts/
-  ingest_workbuddy.py   采集入口（--inspect / --dry-run / --ingest / --verify）
+  ingest_workbuddy.py   采集入口（--inspect / --dry-run / --ingest / --verify /
+                        --backfill-cache [--apply]）
   seed_demo.py          生成合成演示数据（独立库，可 --demo 启动）
+  purge_bad_alerts.py   清理口径错误的历史告警（一次性修复工具）
   run_regression.py     一键回归（自管服务 + 临时库副本，五层全跑）
-  smoke.py              HTTP 契约冒烟（35 项）
-  render_check.mjs      前端渲染冒烟（Node DOM 桩，25 项）
+  smoke.py              HTTP 契约冒烟（44 项）
+  render_check.mjs      前端渲染冒烟（Node DOM 桩，34 项）
   check_privacy.py      隐私红线检查（12 项）
   pilot_acceptance.py   试点验收七条（产出 data/试点验收报告.md）
   setup_env.bat         一键建 venv + 装依赖
   run_dev.bat           一键启动（默认真实库，--demo 走演示库）
-tests/                  99 个 pytest 用例
+tests/                  120 个 pytest 用例
 dashboard.html          设计基线原型（静态示例数据，未接入 API，保留作对照）
 Token消耗看板-产品方案.md   产品设计（竞品扫描 → 指标 → 功能 → 界面 → 风险）
 overview.md             交付概览
@@ -76,6 +79,8 @@ PY=".venv/Scripts/python.exe"          # Linux/macOS: .venv/bin/python
 "$PY" scripts/ingest_workbuddy.py --inspect
 "$PY" scripts/ingest_workbuddy.py --dry-run --limit 20
 "$PY" scripts/ingest_workbuddy.py --ingest
+"$PY" scripts/ingest_workbuddy.py --backfill-cache# 补缓存读（先演练）
+"$PY" scripts/ingest_workbuddy.py --backfill-cache --apply   # 真写（幂等）
 
 # 3) 启服务（默认 127.0.0.1:8787）
 "$PY" -m uvicorn app.main:app --host 127.0.0.1 --port 8787
@@ -99,17 +104,23 @@ PY=".venv/Scripts/python.exe"          # Linux/macOS: .venv/bin/python
 ~/.workbuddy/projects/**/*.jsonl   ──┐
   （主数据源：逐条请求，含 token 数）   │
                                     ├─→ 解析器（只取白名单字段）
-~/.workbuddy/traces/*/trace_*.json ─┘         ↓
-  （仅用于交叉校验，会话级）              归一化（模型别名三级）
+~/.workbuddy/traces/*/trace_*.json ─┤         ↓
+  （会话级补充：补缓存读 token）      ─→ 归一化（模型别名三级）
                                               ↓
-                                     定价（按 ts_day 选版本）
+                                     定价（按 ts_day选版本）
                                               ↓
                                 usage_fact（幂等 UPSERT，微美元）
-                                              ↓
-                                  daily_agg（日汇总，供长周期查询）
+                                    ↑                │
+                      traces 分摊回填 │                ↓
+                      （缓存读，可重复跑）    daily_agg（日汇总）
                                               ↓
                                    FastAPI /api/*  →  web/dashboard.html
 ```
+
+**缓存读为什么要单独回填**：`jsonl` 里没有任何缓存字段，而 traces 有会话级的
+`totalCachedTokens`。两者粒度不同（请求级 vs 会话级），直接混灌会重复计数，
+所以只把 trace 观测到的缓存量**按输入占比分摊给被 trace 实际覆盖的那批请求**，
+未覆盖的请求保持 0——宁可少算，不拿没有证据的数字充数。
 
 `--verify` 会把 jsonl 逐条求和与 traces 会话级汇总对照；只对 trace 留存完整
 （覆盖 ≥98%）的会话判定，留存不全的会话标记为「不可比」而不是伪造一致。
@@ -157,12 +168,12 @@ PY=".venv/Scripts/python.exe"          # Linux/macOS: .venv/bin/python
 | --- | --- | --- |
 | GET | `/api/meta` | 版本、数据来源、口径标签、汇率 |
 | POST | `/api/ingest` | 批量上报（幂等键 `request_id`） |
-| GET | `/api/kpi` | 北极星 + 今日 + Token 分层 + 缓存 + 单请求均价 + 健康度 |
+| GET | `/api/kpi` | 北极星 + 今日 + Token 分层 + 缓存 + 单请求均价 + 健康度 + `budget_detail` / `placeholder_prices` |
 | GET | `/api/trend?days=` | 趋势（日成本 / 预算线 / 移动均值 / 构成） |
 | GET | `/api/tokens?days=` | Token 分层 |
-| GET | `/api/mix?dim=model\|project&days=` | 构成（各项之和精确等于总额） |
+| GET | `/api/mix?dim=model\|project\|tool\|session&days=` | 构成（各项之和精确等于总额） |
 | GET | `/api/insights?days=` | 洞察卡片 |
-| GET | `/api/requests?…&limit=&offset=` | 明细（可筛 status / model） |
+| GET | `/api/requests?…&limit=&offset=&cache=read\|write` | 明细（可筛 status / model / 有缓存读的记录） |
 | GET | `/api/drill/{model}/sessions` | 模型 → 会话下钻 |
 | GET/PUT | `/api/budget` | 日 / 月预算与币种 |
 | GET | `/api/pricing` | 当前价格表与版本 |
@@ -200,9 +211,9 @@ REGRESSION: PASS  5/5 层全部通过（总耗时 4.7s）
 
 | 层 | 单独命令 | 当前结果 |
 | --- | --- | --- |
-| 单元测试 | `pytest -q` | **99 passed** |
-| HTTP 契约冒烟 | `python scripts/smoke.py` | **PASS 35/35**（含跨端点口径一致性、构成之和=总额、预算往返、页面无假数据残留） |
-| 前端渲染冒烟 | `node scripts/render_check.mjs` | **PASS 25/25**（Node DOM 桩跑页面脚本，断言 KPI/图表/表格/洞察均已填充） |
+| 单元测试 | `pytest -q` | **120 passed** |
+| HTTP 契约冒烟 | `python scripts/smoke.py` | **PASS 44/44**（含跨端点口径一致性、构成之和=总额、告警 ack 往返、预算往返、页面无假数据残留） |
+| 前端渲染冒烟 | `node scripts/render_check.mjs` | **PASS 34/34**（Node DOM 桩跑页面脚本，断言 KPI/图表/表格/洞察/告警面板均已填充） |
 | 隐私红线 | `python scripts/check_privacy.py` | **PASS 12/12** |
 | 试点验收七条 | `python scripts/pilot_acceptance.py` | **PASS 7/7**，报告落在 `data/试点验收报告.md` |
 
@@ -213,6 +224,11 @@ REGRESSION: PASS  5/5 层全部通过（总耗时 4.7s）
 "$PY" scripts/run_regression.py --live-db             # 直接打真实库，不做副本
 "$PY" scripts/run_regression.py --base http://127.0.0.1:8787   # 复用已在跑的服务
 ```
+
+> **判定是「退出码 + 正文」双条件**，不是只看退出码。某些环境（比如带删除保护的机器）
+> 会在用例全过之后因为清理临时目录被拦而返回非 0；这时正文里的 `120 passed` 才是真相，
+> 回归会标为 `PASS*通过（环境噪声）` 并在报告里写明原因——既不误报 FAIL，也不静默放过。
+> 真有失败用例时（`N failed`）永远判 FAIL。
 
 `pilot_acceptance.py` 的三条设计原则：**不碰生产库**（写类检查在临时复制的库上做）、
 **可重复**（跑多少次结论一样）、**不当老好人**（任何一条不过就退出码非零）。
@@ -229,6 +245,8 @@ REGRESSION: PASS  5/5 层全部通过（总耗时 4.7s）
 | 月末预测 | $91.10（标注「估算」，方法：月内日均 × 31 天） |
 | 预算可支撑 | 92 天 |
 | Token | 输入 89.1M + 输出 0.65M |
+| **缓存命中率** | **94.4%**（traces 估算口径，覆盖 313/846 = 37% 请求） |
+| **缓存节省** | **$10.57**（标注「估算」，方法：Σ 缓存读 ×（输入单价 − 缓存读单价）） |
 | 单请求均价 | $0.045630 |
 | 交叉校验 | 3 个可比会话逐位一致（差异 0.00%），其余因 trace 留存不全标记「不可比」 |
 
@@ -236,12 +254,18 @@ REGRESSION: PASS  5/5 层全部通过（总耗时 4.7s）
 
 ## 九、已知限制（都不是 bug，是当前数据源的客观边界）
 
-1. **jsonl 不提供缓存 token 字段** → 库里 `cache_read_tokens` 恒为 0，看板的缓存命中率 /
-   缓存节省显示为「—（未上报）」并附原因，**不显示成 0.0%**（那会误导成"缓存完全没命中"）。
-   交叉校验时发现 `traces/*.json` 里有 `totalCachedTokens`，抽样显示缓存读约占输入的 95.5%。
-   要把这两项做真，需把 traces 作为**会话级补充数据源**接入，并处理与 jsonl 的口径重叠避免重复计数。
+1. **缓存 token 来自 traces 估算，不是数据源直报** —— `jsonl` 不提供缓存字段，
+   现在由 `traces` 按会话缓存率分摊补齐（见 `app/sources/trace_cache.py`）。
+   **命中率 94.4% 是「有 trace 支撑的样本」口径，覆盖 313/846 = 37% 的请求**；
+   若拿全库做分母，未覆盖请求会把数字压到 46% 这类失真值，所以前端明确标注覆盖率。
+   trace 只覆盖会话的部分调用（实测有低至 10% 的），这些会话的结论标为「低可信」。
+   ```bash
+   "$PY" scripts/ingest_workbuddy.py --backfill-cache           # 演练，看会补多少
+   "$PY" scripts/ingest_workbuddy.py --backfill-cache --apply   # 真写（幂等，可重复跑）
+   ```
 2. **厂商的模型名是内部代号**，公共价格表无法匹配。当前成本数字基于**显式标注的占位价格**
    （`--apply-placeholder-prices`），只用于验证成本链路是否通，**不代表真实账单**。
+   顶栏会常驻「口径提示条」说明这件事，不用翻 README。
    拿到真实积分单价后应走 `PUT /api/pricing/override`（只新增版本，不动历史）。
    代号 → 占位价格的映射放在 `app/pricing/placeholder.local.json`，**该文件不进版本库**；
    仓库里只有脱敏示例 `placeholder.example.json`，照它复制一份填入自己的模型名即可。
