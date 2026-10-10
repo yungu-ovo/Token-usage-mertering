@@ -21,6 +21,7 @@ from ..timeutil import parse_ts
 from .base import (
     ALLOWED_PATHS,
     ParsedRecord,
+    ParseStats,
     SourceParser,
     as_decimal,
     as_int,
@@ -55,8 +56,11 @@ _IN_CACHE_WRITE = (
 
 class WorkBuddyJsonlParser(SourceParser):
     name = "workbuddy-jsonl"
+    # 字段链：rawUsage > usage > message.usage。上游改结构时递增此版本号。
+    version = "1"
 
     def __init__(self, home: Path | None = None) -> None:
+        super().__init__()
         self.home = Path(home or config.WORKBUDDY_PROJECTS_DIR)
 
     # -------------------------------------------------------------- 发现
@@ -67,23 +71,42 @@ class WorkBuddyJsonlParser(SourceParser):
 
     # -------------------------------------------------------------- 解析
     def iter_records(self, path: Path) -> Iterator[ParsedRecord]:
-        for record in iter_json_lines(path):
+        """逐条产出记录，同时把解析健康度记进 ``self.stats``（RK-07）。"""
+        for record in iter_json_lines(path, self.stats):
+            if not has_usage(record):
+                continue
+            self.stats.usage_lines += 1
             parsed = record_to_parsed(record)
-            if parsed is not None:
-                yield parsed
+            if parsed is None:
+                # 走到这里只剩两种原因：全 0 或没有幂等 id
+                self.stats.bump_skipped(
+                    "missing_id" if not record_id(record) else "zero_tokens"
+                )
+                continue
+            self.stats.parsed += 1
+            yield parsed
 
 
-def iter_json_lines(path: Path) -> Iterator[dict[str, Any]]:
-    """逐行读 JSONL。坏行直接跳过，不中断整份文件。"""
+def iter_json_lines(
+    path: Path, stats: ParseStats | None = None
+) -> Iterator[dict[str, Any]]:
+    """逐行读 JSONL。坏行直接跳过，不中断整份文件。
+
+    传入 ``stats`` 时顺带统计行数——这是解析成功率的分母来源。
+    """
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
                 line = line.strip()
                 if not line or line[0] != "{":
                     continue
+                if stats is not None:
+                    stats.scanned += 1
                 try:
                     obj = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
+                    if stats is not None:
+                        stats.bad_lines += 1
                     continue
                 if isinstance(obj, dict):
                     yield obj
@@ -97,6 +120,19 @@ def has_usage(record: dict[str, Any]) -> bool:
         if dig(record, path) is not None:
             return True
     return False
+
+
+def record_id(record: dict[str, Any]) -> str:
+    """幂等键的原始 id。抽出来是为了让 iter_records 能区分「跳过的两种原因」。"""
+    return str(
+        first_of(
+            record,
+            "providerData.messageId",
+            "providerData.conversationRequestId",
+            "id",
+        )
+        or ""
+    )
 
 
 def record_to_parsed(record: dict[str, Any]) -> ParsedRecord | None:
@@ -122,15 +158,7 @@ def record_to_parsed(record: dict[str, Any]) -> ParsedRecord | None:
         )
         or ""
     )
-    raw_id = (
-        first_of(
-            record,
-            "providerData.messageId",
-            "providerData.conversationRequestId",
-            "id",
-        )
-        or ""
-    )
+    raw_id = record_id(record)
     if not raw_id:
         return None
 

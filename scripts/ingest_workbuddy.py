@@ -26,9 +26,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app import alerts, config  # noqa: E402
+from app import alerts, collect as collect_mod, config  # noqa: E402
 from app.db import init_db, session, tx  # noqa: E402
-from app.ingest import ingest_items  # noqa: E402
 from app.sources.base import ALLOWED_PATHS, dig  # noqa: E402
 from app.sources.workbuddy_jsonl import (  # noqa: E402
     WorkBuddyJsonlParser,
@@ -242,89 +241,21 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
 
 
 # ------------------------------------------------------------------ 占位价格
-# WorkBuddy 的模型名是**内部代号**，公开价格表里查不到。为了让成本链路可端到端
-# 验证，提供一组**显式占位价格**：按模型所属的公开家族取最接近的一档列表价，
-# 写入 source='user'，版本串带 placeholder 字样，可被 /api/pricing/override 覆盖。
-#
-# ⚠ 这些不是 WorkBuddy 的真实单价，只是为了让看板能跑通的占位值。
-#
-# 代号表刻意**不进版本库**（内部代号不该出现在公开仓库里）：
-#
-#   app/pricing/placeholder.local.json    本机真实代号（已 gitignore）
-#   app/pricing/placeholder.example.json  脱敏示例（进版本库，供照抄结构）
-#
-# 优先读本地文件；没有就退到示例（此时价格表里只有示例名，真实数据会走
-# __unknown__ 分支，属预期行为，脚本会打印提示）。
-PLACEHOLDER_LOCAL = config.PRICING_DIR / "placeholder.local.json"
-PLACEHOLDER_EXAMPLE = config.PRICING_DIR / "placeholder.example.json"
-PLACEHOLDER_VERSION_FALLBACK = "user-placeholder"
-
-
-def load_placeholder_config(path: Path | None = None) -> tuple[dict[str, dict], dict[str, str], str, str]:
-    """返回 (prices, aliases, version, 来源说明)。
-
-    默认优先本机 ``placeholder.local.json``，缺失时退到脱敏示例。
-    """
-    if path is not None:
-        candidates = [(Path(path), f"指定文件 {path}")]
-    else:
-        candidates = [
-            (PLACEHOLDER_LOCAL, "本机配置 placeholder.local.json"),
-            (PLACEHOLDER_EXAMPLE, "脱敏示例 placeholder.example.json"),
-        ]
-
-    for candidate, label in candidates:
-        if not candidate.exists():
-            continue
-        payload = json.loads(candidate.read_text(encoding="utf-8"))
-        prices = {
-            str(k): {kk: str(vv) for kk, vv in v.items()}
-            for k, v in (payload.get("prices") or {}).items()
-        }
-        aliases = {str(k): str(v) for k, v in (payload.get("aliases") or {}).items()}
-        version = str(payload.get("version") or PLACEHOLDER_VERSION_FALLBACK)
-        return prices, aliases, version, label
-
-    raise SystemExit(
-        "找不到占位价格配置。请任选其一：\n"
-        f"  * 把 {PLACEHOLDER_EXAMPLE.name} 复制成 {PLACEHOLDER_LOCAL.name} 并填入你的模型名\n"
-        f"  * 或显式指定：--placeholder-file <路径>"
-    )
+# 实现已搬到 app/collect.py（B-1：服务层也要能跑这条流水线）。
+# 这里保留同名入口，命令行行为不变。
+def load_placeholder_config(path: Path | None = None):
+    return collect_mod.load_placeholder_config(path)
 
 
 def apply_placeholder_prices(path: Path | None = None) -> None:
-    """写入占位价格与别名。已有同名 user 行会被覆盖（版本号固定）。"""
-    from app.pricing import override
-
-    prices, aliases, version, source = load_placeholder_config(path)
-    if not prices:
-        raise SystemExit(f"占位价格配置为空：{source}")
-
-    init_db()
-    with tx() as conn:
-        for raw, canonical in aliases.items():
-            conn.execute(
-                "INSERT INTO model_alias (alias_raw, model, provider) VALUES (?, ?, '') "
-                "ON CONFLICT(alias_raw) DO UPDATE SET model = excluded.model",
-                (raw, canonical),
-            )
-        for model, price in prices.items():
-            override(
-                conn,
-                model=model,
-                input_per_mtok=price["input"],
-                output_per_mtok=price["output"],
-                cache_read_per_mtok=price["cache_read"],
-                cache_write_per_mtok=price["cache_write"],
-                effective_from="2026-01-01",
-                version=f"{version}:{model}",
-            )
-    print(f"!! 已写入占位价格（source=user，版本串含 placeholder 字样）")
+    info = collect_mod.apply_placeholder_prices(path)
+    source = info["source"]
+    print("!! 已写入占位价格（source=user，版本串含 placeholder 字样）")
     print(f"   来源：{source}")
     if source.endswith("placeholder.example.json"):
         print("   ⚠ 用的是脱敏示例，里面没有你的真实模型名 → 真实数据会进 __unknown__。")
-        print(f"     要计入成本，请把示例复制成 {PLACEHOLDER_LOCAL.name} 并填入真实代号。")
-    print(f"   模型数：{len(prices)}")
+        print(f"     要计入成本，请把示例复制成 {collect_mod.PLACEHOLDER_LOCAL.name} 并填入真实代号。")
+    print(f"   模型数：{info['models']}")
     print("!! 这些不是 WorkBuddy 的真实单价，请用 /api/pricing/override 覆盖。")
 
 
@@ -333,11 +264,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     if args.apply_placeholder_prices:
         apply_placeholder_prices(getattr(args, "placeholder_file", None))
 
-    parser = WorkBuddyJsonlParser()
-    records = list(parser.parse_all())
-    if args.since:
-        records = [r for r in records if r.ts[:10] >= args.since]
-
+    records, stats = collect_mod.parse_records(since=args.since)
     if not records:
         print("没有可写入的记录")
         return 1
@@ -348,19 +275,36 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         return _ingest_via_http(records, args)
 
     init_db()
-    items = [_to_item(r) for r in records]
     with tx() as conn:
-        summary = ingest_items(conn, data_source=config.DATA_SOURCE_WORKBUDDY, items=items)
-        alerts.evaluate_budget(conn)
-        alerts.evaluate_unpriced(conn)
+        summary = collect_mod.collect(conn, since=args.since, backfill_cache=True)
 
+    print("\n--- 解析器健康度（RK-07）---")
+    print(f"  解析器版本    : {stats.parser_name} v{stats.parser_version}")
+    print(f"  扫描行数      : {stats.scanned}（坏行 {stats.bad_lines}）")
+    print(f"  含用量记录    : {stats.usage_lines}")
+    print(f"  成功解析      : {stats.parsed}")
+    rate = stats.rate()
+    print("  解析成功率    : " + ("—（无样本）" if rate is None else f"{rate:.2%}"))
+    if stats.skipped:
+        print(f"  跳过原因      : {dict(stats.skipped)}")
+
+    ing = summary.get("ingest") or {}
     print("\n--- 写入结果 ---")
-    print(f"  接收 {summary['received']}  新增 {summary['inserted']}  "
-          f"更新 {summary['updated']}  去重忽略 {summary['ignored']}")
-    if summary.get("unknown_models_new"):
-        print(f"  首次出现的未识别模型: {summary['unknown_models_new']}")
-    if summary.get("unknown_models"):
-        print(f"  涉及未识别模型共 {len(summary['unknown_models'])} 种")
+    print(f"  接收 {ing.get('received', 0)}  新增 {ing.get('inserted', 0)}  "
+          f"更新 {ing.get('updated', 0)}  去重忽略 {ing.get('ignored', 0)}")
+    if ing.get("unknown_models_new"):
+        print(f"  首次出现的未识别模型: {ing['unknown_models_new']}")
+    if ing.get("unknown_models"):
+        print(f"  涉及未识别模型共 {len(ing['unknown_models'])} 种")
+
+    cache = summary.get("cache")
+    if cache:
+        print(f"\n  缓存回填      : {cache['requests']} 行 / "
+              f"{cache['cache_read_tokens']:,} tokens（{cache['sessions']} 个会话）")
+
+    print("\n--- 告警巡检 ---")
+    for key, value in (summary.get("alerts") or {}).items():
+        print(f"  {key:<16}: {value}")
 
     with session() as conn:
         row = conn.execute(

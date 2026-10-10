@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import sys
 import urllib.error
@@ -21,7 +22,14 @@ from typing import Any
 
 # 每个 API 必须出现在响应里的顶层字段（契约，前端依赖这些字段）
 REQUIRED_KEYS: dict[str, set[str]] = {
-    "/api/meta": {"generated_at", "data_source", "pricing_version", "credit_rate"},
+    "/api/meta": {
+        "generated_at",
+        "data_source",
+        "pricing_version",
+        "credit_rate",
+        "data_freshness",  # A-4
+        "parser",  # B-2
+    },
     "/api/kpi": {"generated_at", "north_star", "today", "tokens", "cache", "per_request", "health"},
     "/api/trend": {"generated_at", "points", "total_cost", "daily_budget"},
     "/api/tokens": {"generated_at", "days", "points", "totals"},
@@ -287,6 +295,113 @@ def main() -> int:
             if real > 0 and claimed > real * 1000:
                 bad.append(a["id"])
         report(not bad, "告警金额与 KPI 同口径（无1e6 量级放大）", f"KPI=${real} 异常={bad}")
+
+    # ---------------------------------------------------------- A-4 数据新鲜度
+    # 没有它，旧数据和新数据在界面上长得一模一样，只有数字会悄悄说谎。
+    status, meta_body = fetch(opener, base + "/api/meta")
+    fresh = meta_body.get("data_freshness") if isinstance(meta_body, dict) else None
+    report(
+        status == 200
+        and isinstance(fresh, dict)
+        and {
+            "has_data",
+            "row_count",
+            "last_record_ts",
+            "freshness_hours",
+            "is_stale",
+        }
+        <= set(fresh),
+        "GET /api/meta 返回 data_freshness（数据新鲜度）",
+        str(fresh)[:110],
+    )
+    report(
+        isinstance(fresh, dict) and bool(fresh.get("has_data")) == bool(fresh.get("row_count")),
+        "data_freshness 与库中行数一致",
+        f"has_data={fresh.get('has_data') if isinstance(fresh, dict) else '?'}",
+    )
+
+    # ---------------------------------------------------------- B-2 采集健康度
+    parser = meta_body.get("parser") if isinstance(meta_body, dict) else None
+    report(
+        isinstance(parser, dict)
+        and {"version", "success_rate", "scanned", "usage_lines", "parsed", "healthy"}
+        <= set(parser),
+        "GET /api/meta 返回解析器健康度（RK-07）",
+        str(parser)[:110],
+    )
+
+    # ---------------------------------------------------------- A-1 告警三态
+    # 只按 acknowledged 判断会漏掉「系统已自动解除」这一态，
+    # 于是过期告警会一直挂在界面上说一件已经不成立的事。
+    _, alerts_state = fetch(opener, base + "/api/alerts?limit=20")
+    items_state = alerts_state.get("items", []) if isinstance(alerts_state, dict) else []
+    report(
+        all(i.get("state") in ("open", "acknowledged", "resolved") for i in items_state),
+        "告警事件带 state 三态字段",
+        f"{len(items_state)} 条",
+    )
+    _, alerts_open = fetch(opener, base + "/api/alerts?unacked=true&limit=50")
+    open_items = alerts_open.get("items", []) if isinstance(alerts_open, dict) else []
+    report(
+        all(i.get("state") == "open" for i in open_items),
+        "待处理列表不含已确认/已自动解除项",
+        f"{len(open_items)} 条",
+    )
+
+    # ---------------------------------------------------------- A-3 告警时间本地化
+    # SQLite 的 datetime('now') 是 UTC，写成它的话 UTC+8 下告警会早 8 小时。
+    # 只能拿**刚触发**的告警来判：一条昨天留下的告警本来就该是几十小时前，
+    # 无法与「时区偏移」区分。所以只对 1 小时内的新告警断言，没有就跳过 ——
+    # 那条路径由 tests/test_alerts.py 里的 fire() 用例直接守着。
+    now_naive = dt.datetime.now()
+
+    def _age(item: dict) -> float | None:
+        try:
+            fired = dt.datetime.strptime(str(item.get("fired_at") or ""), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+        return abs((now_naive - fired).total_seconds())
+
+    recent_alerts = [i for i in items_state if (_age(i) or 1e9) <= 3600]
+    if recent_alerts:
+        worst = max((_age(i) or 0) for i in recent_alerts)
+        report(
+            worst <= 300,
+            "告警时间是本地时区（新告警与当前时刻一致）",
+            f"{len(recent_alerts)} 条新告警，最大偏差 {worst:.0f} 秒",
+        )
+    else:
+        report(
+            True,
+            "告警时间本地化（无 1 小时内的新告警，跳过）",
+            "由 tests/test_alerts.py 覆盖",
+        )
+
+    # ---------------------------------------------------------- B-1 真采集接口
+    # 用 dry_run 演练：能验证链路通，又不会把本机数据灌进回归用的临时库
+    status, collect_body = fetch(
+        opener, base + "/api/collect?dry_run=1", method="POST", body={}
+    )
+    ok_collect = (
+        status == 200
+        and isinstance(collect_body, dict)
+        and collect_body.get("dry_run") is True
+        and "parsed" in collect_body
+        and isinstance(collect_body.get("parser"), dict)
+    )
+    report(
+        ok_collect,
+        "POST /api/collect?dry_run=1 演练（解析不写库）",
+        f"{status} {collect_body.get('parsed') if isinstance(collect_body, dict) else str(collect_body)[:80]}",
+    )
+    _, health_after = fetch(opener, base + "/api/health")
+    report(
+        isinstance(health_after, dict)
+        and isinstance(fresh, dict)
+        and health_after.get("usage_fact_rows") == fresh.get("row_count"),
+        "演练没有写入任何数据",
+        f"{health_after.get('usage_fact_rows') if isinstance(health_after, dict) else '?'} 行",
+    )
 
     # ---------------------------------------------------------- 前端页面
     # 根路径应重定向到看板，且页面必须真的去调 API（不是硬编码假数据）

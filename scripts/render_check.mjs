@@ -205,8 +205,38 @@ check(
 );
 check(
   "告警徽标状态与横幅一致",
-  !!badge && (badge.hidden === true) === (alertbar === "" || /没有待确认/.test(alertbar)),
+  !!badge && (badge.hidden === true) === (alertbar === "" || /没有待处理|没有待确认/.test(alertbar)),
   `badge.hidden=${badge && badge.hidden}`,
+);
+
+/* ---------------- A-1 告警三态 ---------------- */
+// 只按 acknowledged 判断会漏掉「系统已自动解除」：过期告警会一直挂着说谎。
+check(
+  "告警按三态判定（open / acknowledged / resolved）",
+  html.includes('a.state === "open"') && html.includes('"resolved"'),
+  html.includes('a.state === "open"') ? "" : "仍是二态",
+);
+check("自动解除的告警在抽屉里有独立呈现", html.includes("已自动解除"));
+
+/* ---------------- A-4 数据新鲜度必须在顶栏看得见 ---------------- */
+// 旧数据和新数据在界面上长得一模一样，只有显式标出来用户才知道数字停在什么时候。
+const freshChip = registry.get("chip-fresh-text");
+check(
+  "数据新鲜度角标已渲染（A-4）",
+  !!freshChip && /数据截至|暂无数据/.test(freshChip.textContent || ""),
+  freshChip && freshChip.textContent,
+);
+check("新鲜度角标由 /api/meta 的 data_freshness 驱动", html.includes("data_freshness"));
+
+/* ---------------- B-1 刷新按钮必须真采集 ---------------- */
+check(
+  "「采集」按钮走 /api/collect 而不是只重算的 /api/refresh（A-2）",
+  html.includes('"/api/collect"') && !/fetchJSON\("\/api\/refresh"/.test(html),
+  html.includes('"/api/collect"') ? "" : "仍在调 refresh",
+);
+check(
+  "采集完成后有回执提示（点了要看得见采到了什么）",
+  html.includes("collect-host") && html.includes("state.collectNote"),
 );
 
 /* ---------------- B-2 口径提示条 ---------------- */

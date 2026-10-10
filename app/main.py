@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from contextlib import asynccontextmanager
+from decimal import Decimal
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query
@@ -16,9 +17,10 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
-from . import __version__, alerts, config, currency, db, scheduler
+from . import __version__, alerts, collect as collect_mod, config, currency, db, scheduler
 from .aggregator import rebuild_all
 from .ingest import ingest_items
+from .timeutil import now_local_str
 from .models import (
     BudgetUpdate,
     CreditRateUpdate,
@@ -67,6 +69,19 @@ def api_meta() -> dict[str, Any]:
         from .pricing import current_version
 
         rate, calibrated = db.get_credit_rate(conn)
+        parser = {
+            "version": db.get_meta(conn, alerts.META_PARSER_VERSION),
+            "success_rate": db.get_meta(conn, alerts.META_PARSE_RATE),
+            "scanned": int(db.get_meta(conn, alerts.META_PARSER_SCANNED) or 0),
+            "usage_lines": int(db.get_meta(conn, alerts.META_PARSER_USAGE_LINES) or 0),
+            "parsed": int(db.get_meta(conn, alerts.META_PARSER_PARSED) or 0),
+            "min_success_rate": str(config.PARSE_SUCCESS_MIN),
+            "last_collect_at": db.get_meta(conn, "last_collect_at"),
+        }
+        parser["healthy"] = (
+            parser["success_rate"] == ""
+            or Decimal(parser["success_rate"]) >= config.PARSE_SUCCESS_MIN
+        )
         return {
             "app": config.APP_NAME,
             "version": __version__,
@@ -77,6 +92,11 @@ def api_meta() -> dict[str, Any]:
             "currencies": currency.supported(conn),
             "fx": currency.fx_block(conn),
             "scheduler_enabled": scheduler.enabled(),
+            # A-4：没有这个，旧数据和新数据在界面上长得一模一样
+            "data_freshness": collect_mod.data_freshness(conn),
+            # B-2：解析器版本与成功率，数据源改格式时这里会先掉下来
+            "parser": parser,
+            "auto_collect": config.AUTO_COLLECT,
         }
 
 
@@ -255,11 +275,12 @@ def api_pricing_override(body: PricingOverride) -> dict[str, Any]:
 @app.put("/api/pricing/credit-rate", tags=["config"])
 def api_credit_rate(body: CreditRateUpdate) -> dict[str, Any]:
     with _conn() as conn:
+        now = now_local_str()
         conn.execute(
-            "INSERT INTO credit_rate (id, rate, calibrated, updated_at) VALUES (1, ?, ?, datetime('now')) "
+            "INSERT INTO credit_rate (id, rate, calibrated, updated_at) VALUES (1, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET rate = excluded.rate, "
-            "calibrated = excluded.calibrated, updated_at = datetime('now')",
-            (str(body.rate), 1 if body.calibrated else 0),
+            "calibrated = excluded.calibrated, updated_at = excluded.updated_at",
+            (str(body.rate), 1 if body.calibrated else 0, now),
         )
         return {"rate": str(body.rate), "calibrated": body.calibrated}
 
@@ -291,11 +312,34 @@ def api_alert_ack(alert_id: int) -> dict[str, Any]:
 # ================================================================ 运维
 @app.post("/api/refresh", tags=["ops"])
 def api_refresh() -> dict[str, Any]:
-    """重算聚合 + 跑一次告警巡检。"""
+    """重算聚合 + 跑一次告警巡检。
+
+    注意：这里**不采集**。要拉新数据请用 ``POST /api/collect``——
+    早先两者混在一个按钮上，于是「重新采集」其实什么都没采（A-2）。
+    """
     with db.tx() as conn:
         rows = rebuild_all(conn)
         result = alerts.evaluate_scheduled(conn)
     return {"agg_rows": rows, "alerts": result}
+
+
+@app.post("/api/collect", tags=["ops"])
+def api_collect(
+    since: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    dry_run: bool = False,
+    backfill_cache: bool = True,
+) -> dict[str, Any]:
+    """真·采集：解析本机会话转录 → 幂等落库 → traces 回填缓存 → 重算聚合 → 告警巡检。
+
+    ``dry_run=1`` 只解析不写库，用于演练和自检（回归测试走这条路径，避免污染临时库）。
+    """
+    if dry_run:
+        with db.session() as conn:
+            return collect_mod.collect(conn, since=since, dry_run=True)
+    with db.tx() as conn:
+        return collect_mod.collect(
+            conn, since=since, backfill_cache=backfill_cache
+        )
 
 
 @app.get("/api/health", tags=["ops"])

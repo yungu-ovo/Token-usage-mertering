@@ -67,6 +67,15 @@ BURN_RATE_MULTIPLIER = Decimal("3")
 # 预测耗尽告警的提前量（天）
 FORECAST_LEAD_DAYS = 7
 
+# ---------------------------------------------------------------- 采集（B-1 / B-2）
+# 定时采集：默认**关闭**。它会在后台定期读本机会话文件，
+# 「服务自己读」和「用户点一下才读」是两种不同的信任关系，该由用户显式开启。
+AUTO_COLLECT = os.environ.get("TUM_AUTO_COLLECT", "0") not in ("0", "false", "False", "")
+AUTO_COLLECT_INTERVAL_MINUTES = int(os.environ.get("TUM_AUTO_COLLECT_MINUTES", "30"))
+
+# 解析成功率下限（RK-07）：低于此值说明数据源格式变了，成本会被**少算**，必须告警
+PARSE_SUCCESS_MIN = Decimal(os.environ.get("TUM_PARSE_SUCCESS_MIN", "0.95"))
+
 # 月末预测的最少样本天数，低于此值标注「样本不足」
 FORECAST_MIN_SAMPLE_DAYS = 3
 

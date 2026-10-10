@@ -73,3 +73,23 @@ def _from_epoch(seconds: float) -> dt.datetime | None:
 
 def today_local() -> dt.date:
     return dt.datetime.now(tz=LOCAL_TZ).date()
+
+
+def now_local() -> dt.datetime:
+    """当前**本地时区**时刻（带 tzinfo）。"""
+    return dt.datetime.now(tz=LOCAL_TZ)
+
+
+def now_local_str() -> str:
+    """当前本地时间，格式化成 ``YYYY-MM-DD HH:MM:SS``。
+
+    凡是**会展示给用户**的时间列，都必须由 Python 侧算好再写库，
+    不能让 SQLite 用 ``datetime('now')`` 生成——那是 UTC，UTC+8 下会整整差 8 小时
+    （A-3：告警时间戳曾因此全部早了 8 小时）。
+    """
+    return now_local().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def now_local_iso() -> str:
+    """当前本地时间的 ISO8601 串（带 +08:00 偏移）。"""
+    return now_local().isoformat(timespec="seconds")

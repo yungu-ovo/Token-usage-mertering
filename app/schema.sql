@@ -142,8 +142,13 @@ CREATE TABLE IF NOT EXISTS alert_event (
   message         TEXT NOT NULL DEFAULT '',
   value_micro     INTEGER,
   threshold_micro INTEGER,
-  fired_at        TEXT NOT NULL DEFAULT (datetime('now')),
-  acknowledged    INTEGER NOT NULL DEFAULT 0
+  -- 故意不给默认值：时间必须由 Python 侧按本地时区算好再写（A-3）。
+  -- 交给 SQLite 的 datetime('now') 会得到 UTC，UTC+8 下界面会早 8 小时。
+  fired_at        TEXT NOT NULL,
+  acknowledged    INTEGER NOT NULL DEFAULT 0,
+  -- 系统自动解除的时刻（A-1）。NULL = 问题仍然存在；
+  -- 与 acknowledged 分开，保留「用户确认过」与「系统判定已恢复」的区别。
+  resolved_at     TEXT
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_alert_fired ON alert_event(fired_at DESC);

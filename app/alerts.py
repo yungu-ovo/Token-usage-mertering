@@ -16,11 +16,23 @@ from typing import Any
 
 from . import config
 from .caliber import days_until_budget_exhausted, month_end_forecast
-from .db import get_budget
+from .db import get_budget, get_meta
 from .money import dec, money_str, to_micro
 from .queries.common import COST_EXPR, fetch_cost, month_range
+from .timeutil import now_local_str
 
 UNPRICED_KEY = "unpriced:models"
+PARSER_KEY = "parser:success_rate"
+# 状态型告警（不是事件型）：速率回落后解除，再超再触发。
+# 早先按小时拼 key，每个小时都是一个新 key，alert_state 会无限膨胀且永不解除。
+BURN_RATE_KEY = "burn_rate"
+
+# 采集健康度的元信息键（由 app/collect.py 写入）
+META_PARSE_RATE = "parse_success_rate"
+META_PARSER_VERSION = "parser_version"
+META_PARSER_SCANNED = "parse_scanned"
+META_PARSER_USAGE_LINES = "parse_usage_lines"
+META_PARSER_PARSED = "parse_parsed"
 
 
 # ------------------------------------------------------------------ 状态读写
@@ -46,16 +58,18 @@ def fire(
     if _is_active(conn, key):
         return False
 
+    now = now_local_str()
     conn.execute(
         "INSERT INTO alert_state (alert_key, level, triggered_at, cleared_at) "
-        "VALUES (?, ?, datetime('now'), NULL) "
+        "VALUES (?, ?, ?, NULL) "
         "ON CONFLICT(alert_key) DO UPDATE SET "
-        "  level = excluded.level, triggered_at = datetime('now'), cleared_at = NULL",
-        (key, level),
+        "  level = excluded.level, triggered_at = excluded.triggered_at, cleared_at = NULL",
+        (key, level, now),
     )
     conn.execute(
-        "INSERT INTO alert_event (alert_key, level, category, message, value_micro, threshold_micro) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO alert_event "
+        "(alert_key, level, category, message, value_micro, threshold_micro, fired_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
             key,
             level,
@@ -63,18 +77,62 @@ def fire(
             message,
             None if value is None else to_micro(value),
             None if threshold is None else to_micro(threshold),
+            now,
         ),
     )
     return True
 
 
 def clear(conn: sqlite3.Connection, key: str) -> None:
-    """指标回落，解除激活态，允许下次再触发。"""
+    """指标回落，解除激活态，允许下次再触发。
+
+    A-1：光解除状态层不够——事件层那条未确认的告警还会一直挂在界面上，
+    说一件已经不成立的事。所以这里同时把它标成「已自动解除」。
+    """
+    now = now_local_str()
     conn.execute(
-        "UPDATE alert_state SET cleared_at = datetime('now') "
+        "UPDATE alert_state SET cleared_at = ? "
         "WHERE alert_key = ? AND cleared_at IS NULL",
-        (key,),
+        (now, key),
     )
+    conn.execute(
+        "UPDATE alert_event SET resolved_at = ? "
+        "WHERE alert_key = ? AND acknowledged = 0 AND resolved_at IS NULL",
+        (now, key),
+    )
+
+
+# ------------------------------------------------------------------ 自我校验
+# 不变量：**一条「未确认且未自动解除」的告警，其 alert_key 必须仍处于激活态。**
+# 反过来说，只要 key 不活跃了，那条告警就是在陈述一件已经不成立的事，
+# 必须被标为已解除——上一轮的「845 条未定价（实际 0 条）」就是这么漏出来的。
+def stale_open_events(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """返回「仍在展示、但问题已经不成立」的告警事件。正常应恒为空。"""
+    rows = conn.execute(
+        "SELECT e.id, e.alert_key, e.level, e.category, e.message, e.fired_at "
+        "FROM alert_event e "
+        "WHERE e.acknowledged = 0 AND e.resolved_at IS NULL AND NOT EXISTS ("
+        "  SELECT 1 FROM alert_state s "
+        "  WHERE s.alert_key = e.alert_key "
+        "    AND s.triggered_at IS NOT NULL AND s.cleared_at IS NULL"
+        ")"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def sweep_stale(conn: sqlite3.Connection) -> int:
+    """把「已不成立但仍挂着」的告警标为自动解除。返回处理条数。"""
+    stale = stale_open_events(conn)
+    if not stale:
+        return 0
+    now = now_local_str()
+    conn.execute(
+        "UPDATE alert_event SET resolved_at = ? "
+        "WHERE acknowledged = 0 AND resolved_at IS NULL AND id IN (%s)"
+        % ",".join("?" for _ in stale),
+        [now] + [r["id"] for r in stale],
+    )
+    return len(stale)
 
 
 # ------------------------------------------------------------------ 预算三档
@@ -184,11 +242,10 @@ def evaluate_burn_rate(conn: sqlite3.Connection) -> bool:
     from .queries.insights import _burn_rate
 
     info = _burn_rate(conn)
-    key = f"burn_rate:{dt.datetime.now().strftime('%Y-%m-%dT%H')}"
     if info["triggered"]:
         return fire(
             conn,
-            key,
+            BURN_RATE_KEY,
             "severe",
             "burn_rate",
             f"近 {config.BURN_RATE_WINDOW_HOURS} 小时成本 ${info['current']}，"
@@ -197,41 +254,101 @@ def evaluate_burn_rate(conn: sqlite3.Connection) -> bool:
             dec(info["current"]),
             dec(info["baseline"]),
         )
+    # 速率回落后必须解除，否则这个 key 永远活跃、之后再也不会触发（A-1 同源问题）
+    clear(conn, BURN_RATE_KEY)
+    return False
+
+
+# ------------------------------------------------------------------ 采集健康度
+def evaluate_parser(conn: sqlite3.Connection) -> bool:
+    """解析成功率低于阈值就告警（RK-07）。
+
+    数据源改了日志格式时，解析器会**静默地少解析**，看板上表现为"今天成本很低"，
+    用户只会以为是自己没怎么用。这是必然发生且无感知的失败，必须有告警。
+    """
+    rate_text = get_meta(conn, META_PARSE_RATE)
+    if not rate_text:
+        clear(conn, PARSER_KEY)
+        return False
+
+    try:
+        rate = dec(rate_text)
+    except Exception:
+        return False
+
+    scanned = int(get_meta(conn, META_PARSER_USAGE_LINES) or 0)
+    parsed = int(get_meta(conn, META_PARSER_PARSED) or 0)
+    version = get_meta(conn, META_PARSER_VERSION) or "unknown"
+
+    if scanned <= 0:
+        clear(conn, PARSER_KEY)
+        return False
+
+    if rate < config.PARSE_SUCCESS_MIN:
+        return fire(
+            conn,
+            PARSER_KEY,
+            "warn",
+            "parser",
+            f"解析器（{version}）成功率 {rate * 100:.1f}%，低于 {config.PARSE_SUCCESS_MIN * 100:.0f}%："
+            f"{scanned} 条含用量记录只解析出 {parsed} 条。"
+            f"通常是数据源改了日志格式，成本会被**少算**，请核对后再信看板上的数字",
+            rate,
+            config.PARSE_SUCCESS_MIN,
+        )
+    clear(conn, PARSER_KEY)
     return False
 
 
 # ------------------------------------------------------------------ 定时任务
 def evaluate_scheduled(conn: sqlite3.Connection) -> dict[str, int]:
-    """每小时跑一次：烧钱速率 + 预测耗尽 + 未定价模型。"""
-    return {
+    """每小时跑一次：预算 + 烧钱速率 + 预测耗尽 + 未定价 + 采集健康度。"""
+    result = {
         "budget": evaluate_budget(conn)["fired"],
         "burn_rate": int(evaluate_burn_rate(conn)),
         "unpriced": int(evaluate_unpriced(conn)),
+        "parser": int(evaluate_parser(conn)),
     }
+    # 兜底：任何一条「还挂着但已经不成立」的告警，在这里统一收口
+    result["stale_resolved"] = sweep_stale(conn)
+    return result
 
 
 # ------------------------------------------------------------------ 读取
 def recent(
     conn: sqlite3.Connection, limit: int = 50, unacked_only: bool = False
 ) -> list[dict[str, Any]]:
-    clause = "WHERE acknowledged = 0" if unacked_only else ""
+    # 「待处理」= 既没被用户确认，也没被系统判定为已恢复（A-1）
+    clause = "WHERE acknowledged = 0 AND resolved_at IS NULL" if unacked_only else ""
     rows = conn.execute(
         f"SELECT * FROM alert_event {clause} ORDER BY fired_at DESC LIMIT ?", (limit,)
     ).fetchall()
-    return [
-        {
-            "id": r["id"],
-            "key": r["alert_key"],
-            "level": r["level"],
-            "category": r["category"],
-            "message": r["message"],
-            "value": None if r["value_micro"] is None else money_str(dec(r["value_micro"]) / 1000000),
-            "threshold": None if r["threshold_micro"] is None else money_str(dec(r["threshold_micro"]) / 1000000),
-            "fired_at": r["fired_at"],
-            "acknowledged": bool(r["acknowledged"]),
-        }
-        for r in rows
-    ]
+    return [_event_to_item(r) for r in rows]
+
+
+def _event_to_item(r: sqlite3.Row) -> dict[str, Any]:
+    acked = bool(r["acknowledged"])
+    resolved = r["resolved_at"] if "resolved_at" in r.keys() else None
+    if acked:
+        state = "acknowledged"
+    elif resolved:
+        state = "resolved"
+    else:
+        state = "open"
+    return {
+        "id": r["id"],
+        "key": r["alert_key"],
+        "level": r["level"],
+        "category": r["category"],
+        "message": r["message"],
+        "value": None if r["value_micro"] is None else money_str(dec(r["value_micro"]) / 1000000),
+        "threshold": None if r["threshold_micro"] is None else money_str(dec(r["threshold_micro"]) / 1000000),
+        "fired_at": r["fired_at"],
+        "acknowledged": acked,
+        "resolved_at": resolved,
+        # 前端据此分三态展示：未处理 / 已确认 / 已自动解除（A-1）
+        "state": state,
+    }
 
 
 def acknowledge(conn: sqlite3.Connection, alert_id: int) -> bool:

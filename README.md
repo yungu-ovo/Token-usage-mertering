@@ -6,7 +6,7 @@
 本仓库是把 `Token消耗看板-产品方案.md`（产品设计）与开发计划落成可运行代码的实现，试点数据源是
 本机 WorkBuddy 的会话转录。
 
-- 版本：`0.2.0` ｜ 范围：**仅 P0**（信息架构里标 P1/P2 的一律不做）
+- 版本：`0.3.0` ｜ 范围：**仅 P0**（信息架构里标 P1/P2 的一律不做）
 - 后端：Python 3.11+ / FastAPI / SQLite（WAL）/ APScheduler（进程内）
 - 前端：单文件 HTML + 原生 JS + 内联 SVG，**零构建、零 CDN**
 - 金额存储：**INTEGER 微美元**（1e-6 USD），全链路 `Decimal`，禁用二进制浮点
@@ -24,10 +24,11 @@ app/
   timeutil.py       时间解析（秒/毫秒/ISO8601 → 本地自然日）
   models.py         Pydantic 请求/响应
   ingest.py         落库主流程（幂等 UPSERT / 归一 / 定价 / 汇总）
+  collect.py        采集流水线（解析→落库→回填→重算→巡检），服务与脚本共用
   aggregator.py     日汇总重算
-  alerts.py         预算三档 + 烧钱速率 + 预测耗尽
+  alerts.py         预算三档 + 烧钱速率 + 预测耗尽 + 采集健康度
   currency.py       静态汇率（不联网）
-  scheduler.py      每小时巡检 + 每日清理
+  scheduler.py      每小时巡检 + 每日清理 + 可选定时采集
   main.py           路由 + 静态前端挂载
   pricing/          价格表：默认价 / 别名 / 归一器 / 版本化读写
   queries/          kpi · trend · tokens · mix · insights · details · common
@@ -44,9 +45,7 @@ scripts/
   render_check.mjs      前端渲染冒烟（Node DOM 桩，34 项）
   check_privacy.py      隐私红线检查（12 项）
   pilot_acceptance.py   试点验收七条（产出 data/试点验收报告.md）
-  setup_env.bat         一键建 venv + 装依赖
-  run_dev.bat           一键启动（默认真实库，--demo 走演示库）
-tests/                  120 个 pytest 用例
+tests/                  144 个 pytest 用例
 dashboard.html          设计基线原型（静态示例数据，未接入 API，保留作对照）
 Token消耗看板-产品方案.md   产品设计（竞品扫描 → 指标 → 功能 → 界面 → 风险）
 overview.md             交付概览
@@ -57,19 +56,11 @@ LICENSE                 MIT 许可
 
 ## 二、快速开始
 
-### 方式 A：一键脚本（Windows）
-
-```bat
-scripts\setup_env.bat              :: 建 .venv + 装依赖 + 初始化库 + 跑单测
-scripts\run_dev.bat                :: 用真实库 data\usage.db 启动
-scripts\run_dev.bat --demo         :: 用演示库 data\demo.db 启动（无真实数据时看全貌）
-scripts\run_dev.bat --port 9000    :: 换端口
-```
-
-### 方式 B：直接用命令（已验证）
+只有一份命令清单，**没有一键脚本**——曾经有过两个 `.bat`，但它们在开发机上
+从未被执行验证过（沙箱拦 `cmd.exe`）。一个没跑过的"一键脚本"是风险不是便利，
+所以删掉了，只留下面这些**逐条验证过**的命令。
 
 ```bash
-# 建好虚拟环境后（scripts/setup_env.bat 会自动建 .venv）
 PY=".venv/Scripts/python.exe"          # Linux/macOS: .venv/bin/python
 
 # 1) 初始化库（幂等，重复执行安全）
@@ -86,15 +77,41 @@ PY=".venv/Scripts/python.exe"          # Linux/macOS: .venv/bin/python
 "$PY" -m uvicorn app.main:app --host 127.0.0.1 --port 8787
 ```
 
+服务起来之后，看板顶栏那个「采集」按钮走的就是同一条流水线
+（`POST /api/collect`），不必回到命令行。
+
+想让它自己在后台定期采？默认**不开**——它会在后台定时读你的会话文件，
+「服务自己读」和「你点一下才读」是两种不同的信任关系：
+
+```bash
+TUM_AUTO_COLLECT=1 TUM_AUTO_COLLECT_MINUTES=30 "$PY" -m uvicorn app.main:app
+```
+
 没有真实数据也想看全貌？用合成演示数据，一条命令即可：
 
 ```bash
 "$PY" scripts/seed_demo.py          # 生成 data/demo.db（纯虚构数据）
-"$PY" scripts/run_dev.bat --demo    # 或者直接用它启动
+TUM_DB_PATH=data/demo.db "$PY" -m uvicorn app.main:app      # 用演示库启动
 ```
 
 打开 <http://127.0.0.1:8787/> 即看板（`/` 会 307 跳到 `/dashboard.html`），
 `/docs` 是自动生成的 OpenAPI 文档。
+
+### 可调项（`TUM_*` 环境变量）
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `TUM_HOST` / `TUM_PORT` | `127.0.0.1` / `8787` | 只绑回环地址，不对外暴露 |
+| `TUM_DB_PATH` | `data/usage.db` | 换库（演示库就用它指到 `data/demo.db`） |
+| `TUM_DATA_DIR` | `data/` | 数据目录 |
+| `TUM_WB_HOME` | `~/.workbuddy` | 只读的数据源根目录 |
+| `TUM_BUDGET_DAILY` / `TUM_BUDGET_MONTHLY` | `10` / `300` | 初始预算（USD） |
+| `TUM_CREDIT_TO_USD` | `0.01` | 积分折算率占位值，`calibrated=False` |
+| `TUM_RETENTION_DAYS` | `90` | 明细保留天数，超期汇总进 `daily_agg` 后删除 |
+| `TUM_AUTO_COLLECT` | `0` | 定时采集开关（**默认关**，见上文） |
+| `TUM_AUTO_COLLECT_MINUTES` | `30` | 定时采集间隔 |
+| `TUM_PARSE_SUCCESS_MIN` | `0.95` | 解析成功率告警阈值（RK-07） |
+| `TUM_SCHEDULER` | `1` | 调度器总开关 |
 
 ---
 
@@ -125,6 +142,15 @@ PY=".venv/Scripts/python.exe"          # Linux/macOS: .venv/bin/python
 `--verify` 会把 jsonl 逐条求和与 traces 会话级汇总对照；只对 trace 留存完整
 （覆盖 ≥98%）的会话判定，留存不全的会话标记为「不可比」而不是伪造一致。
 
+**采集是同一条流水线**，`app/collect.py` 一个实现，脚本与 `POST /api/collect`
+共用：解析 → 落库 → traces 回填缓存 → 重算聚合 → 告警巡检。
+早先它只活在 `scripts/` 里，服务层想采也采不了，于是界面上那个「重新采集」
+按钮其实只重算了聚合——数据永远停在最后一次手动跑脚本的时刻。
+
+**数据有多旧必须看得见**：`/api/meta` 的 `data_freshness` 给出最新一条记录的时间
+与滞后小时数，顶栏直接显示「数据截至 …（已滞后 N 天）」。旧数据和新数据在界面上
+长得一模一样，不标出来就只能靠猜。
+
 ---
 
 ## 四、五条硬约束（RK-01 ~ RK-06）
@@ -139,12 +165,19 @@ PY=".venv/Scripts/python.exe"          # Linux/macOS: .venv/bin/python
 | **RK-04** | 隐私：**库中不存在对话正文** | `sources/` 白名单 `ALLOWED_PATHS`；`ParsedRecord` 结构上就没有正文字段；全程只读 `open(..., "r")` | `check_privacy.py` · 验收 #6 |
 | **RK-05** | **双口径**：API 等价成本 + 厂商积分折算 | `usage_fact` 同时存 `equivalent_cost_usd_micro` 与 `vendor_credit_micro`；积分折算率未校准时前端显著标注 | 验收 #5 |
 | **RK-06** | 每个推断值都标**估算 + 方法** | `Estimated` 包装（`estimated` + `estimate_method`），预测 / 缓存节省 / 单请求均价均带标注 | `test_caliber.py` · 验收 #5 |
+| **RK-07** | 数据源改格式**不许静默少算** | `sources/base.py` 的 `ParseStats` 统计解析成功率并写进 `meta`；低于 95% 触发 `parser` 告警，`/api/meta` 暴露版本与成功率 | `test_alerts.py` · `test_collect.py` |
 
-另外两条工程纪律：
+另外四条工程纪律：
 
 - **本地自然日 vs UTC**：价格版本与日切分一律用本地日期（`timeutil.today_local()`），
   禁止 SQLite 的 `date('now')`（UTC）—— UTC+8 的 00:00~08:00 会错选前一天。
   `test_current_version_never_asks_sqlite_for_utc_now` 用 `set_trace_callback` 守住。
+- **展示用的时间必须由 Python 算**：会呈现给用户的时间列（告警的 `fired_at` 等）
+  一律走 `timeutil.now_local_str()`。SQLite 的 `datetime('now')` 是 UTC，
+  曾经让告警时间整整早了 8 小时。`test_alerts_module_never_lets_sqlite_generate_time` 守住。
+- **告警不许说已经不成立的话**：一条「未确认且未自动解除」的告警，其 `alert_key`
+  必须仍处于激活态。`clear()` 会同时把事件标为 `resolved_at`，`sweep_stale()` 再兜底
+  收口跨周期残留 —— 曾经有一条「845 条未定价」的告警在价格补上之后还挂了整整一天。
 - **分摊不许有舍入漂移**：构成图各项之和必须**精确等于**总额，用最大余数法
   `money.apportion()` 而不是各自四舍五入（否则会出现 60.51 vs 61.30）。
 
@@ -166,7 +199,7 @@ PY=".venv/Scripts/python.exe"          # Linux/macOS: .venv/bin/python
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/meta` | 版本、数据来源、口径标签、汇率 |
+| GET | `/api/meta` | 版本、数据来源、口径标签、汇率、**数据新鲜度**、**解析器健康度** |
 | POST | `/api/ingest` | 批量上报（幂等键 `request_id`） |
 | GET | `/api/kpi` | 北极星 + 今日 + Token 分层 + 缓存 + 单请求均价 + 健康度 + `budget_detail` / `placeholder_prices` |
 | GET | `/api/trend?days=` | 趋势（日成本 / 预算线 / 移动均值 / 构成） |
@@ -181,7 +214,8 @@ PY=".venv/Scripts/python.exe"          # Linux/macOS: .venv/bin/python
 | PUT | `/api/pricing/credit-rate` | 积分折算率 |
 | GET | `/api/currency` | 支持的币种与汇率 |
 | GET | `/api/alerts` · POST `/api/alerts/{id}/ack` | 告警列表 / 确认 |
-| POST | `/api/refresh` | 触发一次采集 |
+| POST | `/api/refresh` | 重算聚合 + 跑一次告警巡检（**不采集**） |
+| POST | `/api/collect` | **真采集**：解析本机会话 → 落库 → 回填缓存 → 重算 → 巡检（`?dry_run=1` 只解析不写库） |
 | GET | `/api/health` | 健康检查 |
 
 只读端点对写方法返回 405；`limit` / `days` 越界返回 422；`dim` 走正则白名单防注入。
@@ -211,9 +245,9 @@ REGRESSION: PASS  5/5 层全部通过（总耗时 4.7s）
 
 | 层 | 单独命令 | 当前结果 |
 | --- | --- | --- |
-| 单元测试 | `pytest -q` | **120 passed** |
-| HTTP 契约冒烟 | `python scripts/smoke.py` | **PASS 44/44**（含跨端点口径一致性、构成之和=总额、告警 ack 往返、预算往返、页面无假数据残留） |
-| 前端渲染冒烟 | `node scripts/render_check.mjs` | **PASS 34/34**（Node DOM 桩跑页面脚本，断言 KPI/图表/表格/洞察/告警面板均已填充） |
+| 单元测试 | `pytest -q` | **144 passed** |
+| HTTP 契约冒烟 | `python scripts/smoke.py` | **PASS 52/52**（含跨端点口径一致性、构成之和=总额、告警 ack 往返、预算往返、告警三态与时间本地化、采集演练不写库、页面无假数据残留） |
+| 前端渲染冒烟 | `node scripts/render_check.mjs` | **PASS 40/40**（Node DOM 桩跑页面脚本，断言 KPI/图表/表格/洞察/告警面板/新鲜度角标均已填充） |
 | 隐私红线 | `python scripts/check_privacy.py` | **PASS 12/12** |
 | 试点验收七条 | `python scripts/pilot_acceptance.py` | **PASS 7/7**，报告落在 `data/试点验收报告.md` |
 
@@ -237,17 +271,21 @@ REGRESSION: PASS  5/5 层全部通过（总耗时 4.7s）
 
 ## 八、试点实测（本机 WorkBuddy 数据）
 
+> 2026-10-11 采集后的快照。本机会话持续写入，数字会随采集增长——
+> 这不是不稳定，是数据源本来就在动。
+
 | 指标 | 值 |
 | --- | --- |
-| 解析记录 / 落库行数 | 约 1,100 条 / **846 行**（去重后唯一；解析数随本机会话持续写入而增长，落库去重后稳定） |
-| 本月累计（API 等价口径） | **$29.39** / 预算 $300（9.8%，时间进度 32%） |
-| 厂商口径（积分折算） | $10.99（折算率**未校准**） |
-| 月末预测 | $91.10（标注「估算」，方法：月内日均 × 31 天） |
-| 预算可支撑 | 92 天 |
-| Token | 输入 89.1M + 输出 0.65M |
-| **缓存命中率** | **94.4%**（traces 估算口径，覆盖 313/846 = 37% 请求） |
-| **缓存节省** | **$10.57**（标注「估算」，方法：Σ 缓存读 ×（输入单价 − 缓存读单价）） |
-| 单请求均价 | $0.045630 |
+| 落库行数 / 当月请求 | **1,633 行** / 1,431 次（幂等去重后唯一） |
+| 本月累计（API 等价口径） | **$64.90** / 预算 $300（21.6%，时间进度 35%） |
+| 厂商口径（积分折算） | $12.62（折算率**未校准**） |
+| 月末预测 | $182.91（标注「估算」，方法：月内日均 × 31 天） |
+| 预算可支撑 | 39 天 |
+| Token | 输入 212.2M + 输出 1.0M + 缓存读 41.0M |
+| **缓存命中率** | **88.8%**（traces 估算口径，覆盖 348/1633 = 21% 请求） |
+| **缓存节省** | **$11.56**（标注「估算」，方法：Σ 缓存读 ×（输入单价 − 缓存读单价）） |
+| 单请求均价 | $0.045355 |
+| 解析成功率 | **100%**（解析器 v1，扫描 6,152 行 / 含用量 1,634 条） |
 | 交叉校验 | 3 个可比会话逐位一致（差异 0.00%），其余因 trace 留存不全标记「不可比」 |
 
 ---
@@ -256,8 +294,8 @@ REGRESSION: PASS  5/5 层全部通过（总耗时 4.7s）
 
 1. **缓存 token 来自 traces 估算，不是数据源直报** —— `jsonl` 不提供缓存字段，
    现在由 `traces` 按会话缓存率分摊补齐（见 `app/sources/trace_cache.py`）。
-   **命中率 94.4% 是「有 trace 支撑的样本」口径，覆盖 313/846 = 37% 的请求**；
-   若拿全库做分母，未覆盖请求会把数字压到 46% 这类失真值，所以前端明确标注覆盖率。
+   **命中率 88.8% 是「有 trace 支撑的样本」口径，覆盖 348/1633 = 21% 的请求**；
+   若拿全库做分母，未覆盖请求会把数字压低到失真值，所以前端明确标注覆盖率。
    trace 只覆盖会话的部分调用（实测有低至 10% 的），这些会话的结论标为「低可信」。
    ```bash
    "$PY" scripts/ingest_workbuddy.py --backfill-cache           # 演练，看会补多少
@@ -270,8 +308,11 @@ REGRESSION: PASS  5/5 层全部通过（总耗时 4.7s）
    代号 → 占位价格的映射放在 `app/pricing/placeholder.local.json`，**该文件不进版本库**；
    仓库里只有脱敏示例 `placeholder.example.json`，照它复制一份填入自己的模型名即可。
 3. **30 天窗口内只有 7 天有数据**（本机历史有限），趋势图存在真实断点，不是采集失败。
-4. `scripts/*.bat` 在开发机上无法执行（沙箱拦截 `cmd.exe`），
-   逻辑已逐行复核，但**未实跑验证**；等价命令见第二章「方式 B」，均已验证。
+4. **数据不会自己变新，除非你让它采** —— 定时采集默认关闭（`TUM_AUTO_COLLECT=1`
+   才开）。关着的时候顶栏会把滞后天数标出来，点一下即可补采。
+5. **数据源目前只有 WorkBuddy 一家** —— 产品方案里列的 Claude Code / Cursor 日志
+   与厂商 Admin API 尚未接入。这是有意收窄的试点范围，不是遗漏；
+   `SourceParser` 抽象已经就位，接第二个源时它才真正被检验。
 
 ---
 
@@ -280,6 +321,9 @@ REGRESSION: PASS  5/5 层全部通过（总耗时 4.7s）
 多用户 / 多租户、远程上报、告警推送渠道（邮件/IM）、价格表自动同步、
 预算的部门 / 项目多级分配、导出报表定时任务、移动端适配。
 这些都留在产品方案的 P1/P2 列表里，不在本次实现范围。
+
+（CSV 导出是个例外：它是月度复盘刚需，实现成本很低，前端「导出」按钮
+直接导出当前区间的明细，已随看板一起交付。）
 
 ---
 

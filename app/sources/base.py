@@ -8,7 +8,8 @@
 from __future__ import annotations
 
 import abc
-from dataclasses import asdict, dataclass
+from collections import Counter
+from dataclasses import asdict, dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -138,10 +139,58 @@ class ParsedRecord:
         return d
 
 
+@dataclass
+class ParseStats:
+    """一次采集的解析健康度（RK-07）。
+
+    数据源改格式时，解析器不会报错，只会**少解析**——看板上表现为"今天成本很低"，
+    用户以为是自己没怎么用。所以必须把成功率显式算出来并纳入告警。
+
+    分母取**含 token 计数的行数**：会话转录里绝大多数行是正文消息，
+    拿总行数做分母会得到毫无意义的个位数成功率。
+    """
+
+    parser_name: str = ""
+    parser_version: str = ""
+    scanned: int = 0        # 读到的非空原始行
+    bad_lines: int = 0      # 不是合法 JSON 对象的行
+    usage_lines: int = 0    # 其中含 token 计数、本该能解析的行
+    parsed: int = 0         # 实际解析成功的
+    skipped: Counter[str] = field(default_factory=Counter)
+
+    def bump_skipped(self, reason: str) -> None:
+        self.skipped[reason] += 1
+
+    def rate(self) -> float | None:
+        """解析成功率；没有可判定的样本时返回 None（此时不该告警）。"""
+        denom = self.usage_lines or self.scanned
+        if denom <= 0:
+            return None
+        return self.parsed / denom
+
+    def as_dict(self) -> dict[str, Any]:
+        rate = self.rate()
+        return {
+            "parser": self.parser_name,
+            "version": self.parser_version,
+            "scanned": self.scanned,
+            "bad_lines": self.bad_lines,
+            "usage_lines": self.usage_lines,
+            "parsed": self.parsed,
+            "skipped": dict(self.skipped),
+            "success_rate": None if rate is None else f"{rate:.6f}",
+        }
+
+
 class SourceParser(abc.ABC):
     """采集适配器接口。实现必须**只读**原始数据。"""
 
     name: str = "base"
+    # 解析器版本：格式变了就 +1，随解析成功率一起写进 meta，便于事后定位
+    version: str = "0"
+
+    def __init__(self) -> None:
+        self.stats = ParseStats(parser_name=self.name, parser_version=self.version)
 
     @abc.abstractmethod
     def discover(self) -> list[Path]:
@@ -149,8 +198,14 @@ class SourceParser(abc.ABC):
 
     @abc.abstractmethod
     def iter_records(self, path: Path) -> Iterator[ParsedRecord]:
-        """逐条产出规范化记录。无用量记录应被跳过。"""
+        """逐条产出规范化记录。无用量记录应被跳过。
+
+        实现必须顺带维护 ``self.stats``，否则 RK-07 的监控就是空的。
+        """
 
     def parse_all(self, files: Iterable[Path] | None = None) -> Iterator[ParsedRecord]:
         for path in files if files is not None else self.discover():
             yield from self.iter_records(path)
+
+    def reset_stats(self) -> None:
+        self.stats = ParseStats(parser_name=self.name, parser_version=self.version)

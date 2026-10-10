@@ -251,6 +251,13 @@
   .caliberbar b{font-weight:500}
   .caliberbar .dim{color:var(--muted)}
 
+  /* ================= 采集结果提示（A-2） ================= */
+  .collectbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+    padding:8px 13px;border-radius:var(--r-md);margin-bottom:14px;
+    border:1px solid rgba(34,197,94,.34);background:rgba(34,197,94,.07);
+    color:#86EFAC;font-size:12px;line-height:1.55}
+  .collectbar .dim{color:var(--muted)}
+
   /* ================= 抽屉 / 模态框 ================= */
   .scrim{position:fixed;inset:0;background:rgba(2,6,23,.62);z-index:60;
     display:flex;align-items:flex-start;justify-content:flex-end;padding:56px 18px 18px}
@@ -332,6 +339,11 @@
       加载中…
     </span>
 
+    <span class="chip" id="chip-fresh" title="最新一条数据的时间" hidden>
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg>
+      <span id="chip-fresh-text">—</span>
+    </span>
+
     <span class="chip" id="chip-caliber" title="当前成本口径">口径 —</span>
 
     <span class="chip demo" id="chip-credit" title="积分折算率未校准，厂商口径成本仅供参考" hidden>
@@ -351,7 +363,7 @@
       <button type="button" data-range="90" aria-pressed="false">90 天</button>
     </div>
 
-    <button class="icon-btn" type="button" id="btn-refresh" title="重新采集本机 WorkBuddy 用量并刷新">
+    <button class="icon-btn" type="button" id="btn-refresh" title="采集本机 WorkBuddy 最新用量并重算（真采集，不是只重算）">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
       刷新
     </button>
@@ -365,6 +377,7 @@
 
   <div id="banner-host"></div>
   <div id="alertbar-host"></div>
+  <div id="collect-host"></div>
   <div id="caliber-host"></div>
 
   <!-- ============ KPI 区（北极星 + 4 张一级指标，共 5 张） ============ -->
@@ -619,6 +632,7 @@
     insights: null, reqs: null,
     alerts: null,
     tableView: { label: "最近 8 条记录", query: "" },
+    collectNote: "",
     errors: []
   };
 
@@ -756,6 +770,7 @@
   function renderAll(){
     renderChips();
     showBanner();
+    renderCollectNote();
     renderAlerts();
     renderCaliberNote();
     renderKPI();
@@ -766,10 +781,25 @@
     renderTable();
   }
 
+  /* ================= 采集结果（A-2：点完要看见「到底采到了什么」） ================= */
+  function renderCollectNote(){
+    var host = el("collect-host");
+    if (!host) return;
+    if (!state.collectNote){ host.innerHTML = ""; return; }
+    host.innerHTML = '<div class="collectbar">' + esc(state.collectNote) +
+      ' <span class="dim">（数据已重新汇总）</span></div>';
+  }
+
   /* ================= 告警（C-1：引擎一直在跑，界面必须看得见） ================= */
+  // A-1：告警有三态，不能只按 acknowledged 一刀切。
+  // 「已自动解除」= 系统判定问题不复存在（比如价格补上了），它不该再占着横幅。
+  function isOpen(a){
+    if (a.state) return a.state === "open";
+    return !a.acknowledged;   // 兼容不带 state 的旧响应
+  }
   function activeAlerts(){
     if (!state.alerts || !state.alerts.items) return [];
-    return state.alerts.items.filter(function(a){ return !a.acknowledged; });
+    return state.alerts.items.filter(isOpen);
   }
   function renderAlerts(){
     var list = activeAlerts();
@@ -783,9 +813,13 @@
     if (!host) return;
     if (!state.alerts){ host.innerHTML = ""; return; }
     if (!list.length){
-      host.innerHTML = state.alerts.items.length
-        ? '<div class="alertbar"><span class="dot"></span><span class="msg">当前没有待确认的告警。历史共 ' +
-          state.alerts.items.length + ' 条。</span></div>'
+      var all = (state.alerts && state.alerts.items) || [];
+      var autoResolved = all.filter(function(a){ return a.state === "resolved"; }).length;
+      host.innerHTML = all.length
+        ? '<div class="alertbar"><span class="dot"></span><span class="msg">当前没有待处理的告警。历史共 ' +
+          all.length + ' 条' +
+          (autoResolved ? '，其中 ' + autoResolved + ' 条已自动解除（问题不复存在）' : '') +
+          '。</span></div>'
         : "";
       return;
     }
@@ -852,6 +886,30 @@
     } else {
       chip.className = "chip";
       chip.textContent = "数据源未知";
+    }
+
+    // A-4：数据新鲜度。旧数据和新数据在界面上长得一模一样，
+    // 只有显式标出来，用户才知道「看到的数字停在什么时候」。
+    var fresh = meta.data_freshness || {};
+    var fChip = el("chip-fresh"), fText = el("chip-fresh-text");
+    if (fresh.has_data && fresh.last_record_ts){
+      var ts = String(fresh.last_record_ts).replace("T", " ").slice(0, 16);
+      fChip.hidden = false;
+      fText.textContent = "数据截至 " + ts;
+      if (fresh.is_stale){
+        fChip.className = "chip demo";
+        fChip.title = (fresh.note || "数据已滞后") + " —— 点击立即采集";
+        fChip.style.cursor = "pointer";
+      } else {
+        fChip.className = "chip ok";
+        fChip.title = fresh.note || "最新数据时间";
+        fChip.style.cursor = "default";
+      }
+    } else {
+      fChip.hidden = false;
+      fChip.className = "chip";
+      fText.textContent = "库中暂无数据";
+      fChip.title = "执行采集后才有用量记录";
     }
 
     var cr = meta.credit_rate || {};
@@ -1429,15 +1487,23 @@
     }
     body.innerHTML = items.map(function(a){
       var when = String(a.fired_at || "").replace("T", " ");
-      return '<div class="alert-item' + (a.acknowledged ? " acked" : "") + '" data-id="' + num(a.id) + '">' +
+      var st = a.state || (a.acknowledged ? "acknowledged" : "open");
+      var tail = "";
+      if (st === "resolved"){
+        tail = " · 已自动解除 " + String(a.resolved_at || "").replace("T", " ").slice(5, 16);
+      }
+      return '<div class="alert-item' +
+        (st === "open" ? "" : " acked") + '" data-id="' + num(a.id) + '">' +
         '<span class="lv ' + esc(a.level || "") + '">' + esc(a.level || "") + "</span>" +
         '<div class="bd"><div class="msg">' + esc(a.message) + "</div>" +
         '<div class="mt">' + esc(a.category || "") + " · " + esc(when) +
         (a.value ? " · 实测 " + esc(money(a.value)) : "") +
-        (a.threshold ? " / 阈值 " + esc(money(a.threshold)) : "") + "</div></div>" +
-        (a.acknowledged
-          ? '<button class="ackbtn" disabled>已确认</button>'
-          : '<button class="ackbtn" data-ack="' + num(a.id) + '">确认</button>') +
+        (a.threshold ? " / 阈值 " + esc(money(a.threshold)) : "") + esc(tail) + "</div></div>" +
+        (st === "open"
+          ? '<button class="ackbtn" data-ack="' + num(a.id) + '">确认</button>'
+          : st === "resolved"
+            ? '<button class="ackbtn" disabled>已自动解除</button>'
+            : '<button class="ackbtn" disabled>已确认</button>') +
         "</div>";
     }).join("");
     Array.prototype.forEach.call(body.querySelectorAll("[data-ack]"), function(btn){
@@ -1531,18 +1597,24 @@
     });
   }
 
-  /* ================= 手动刷新（重算聚合 + 告警巡检） ================= */
+  /* ================= 采集（A-2：这个按钮必须真采集，不能只重算） =================
+     早先它调的是 /api/refresh —— 那个端点只重算聚合与告警，于是不管点多少次，
+     数据都停在最后一次手动跑脚本的时刻。现在走 /api/collect，解析→落库→回填→重算。
+  */
   function doRefresh(){
     var btn = el("btn-refresh");
     var old = btn.innerHTML;
-    btn.innerHTML = '<span class="spin"></span> 刷新中';
+    btn.innerHTML = '<span class="spin"></span> 采集中';
     setBusy(true);
-    fetchJSON("/api/refresh", { method: "POST" })
-      .then(function(){
+    fetchJSON("/api/collect", { method: "POST" })
+      .then(function(d){
+        var ing = (d && d.ingest) || {};
+        state.collectNote = "采集完成：新增 " + num(ing.inserted) + " 条，更新 " +
+          num(ing.updated) + " 条，解析 " + num(d && d.parsed) + " 条";
         return load(state.range);
       })
       .catch(function(e){
-        state.errors = ["刷新失败：" + (e.message || e)];
+        state.errors = ["采集失败：" + (e.message || e)];
         showBanner();
       })
       .then(function(){
@@ -1586,6 +1658,12 @@
   document.addEventListener("keydown", function(ev){
     if (ev.key !== "Escape") return;
     Array.prototype.forEach.call(document.querySelectorAll(".scrim"), function(s){ s.hidden = true; });
+  });
+
+  // A-4：数据滞后时，点新鲜度角标直接采集
+  el("chip-fresh").addEventListener("click", function(){
+    var fresh = (state.meta && state.meta.data_freshness) || {};
+    if (fresh.is_stale || !fresh.has_data) doRefresh();
   });
 
   // 币种切换（点汇率角标）

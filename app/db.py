@@ -9,12 +9,68 @@ from typing import Iterator
 
 from . import config
 from .money import dec, to_micro
+from .timeutil import now_local_str
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
 META_SCHEMA_VERSION = "schema_version"
 META_PRICING_VERSION = "pricing_version_current"
 META_DATA_SOURCE = "data_source"
+
+META_MIGRATION_PREFIX = "migration:"
+
+# ---------------------------------------------------------------- 迁移
+# schema.sql 全是 CREATE TABLE IF NOT EXISTS，已经存在的库**不会**自动拿到新列。
+# 结构迁移按「缺列就补」幂等执行，不记 meta——补完就是最终态，重复执行无副作用。
+STRUCTURAL_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    # A-1：告警事件需要「系统已自动解除」这一态，否则过期告警永远挂在界面上
+    ("alert_event", "resolved_at", "TEXT"),
+)
+
+# 数据迁移跑一次就记进 meta，绝不重复执行。
+# A-3：告警时间戳曾被 SQLite datetime('now') 写成 UTC，界面上早了整整一个时区。
+DATA_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    (
+        "alert_ts_local_v1",
+        "UPDATE alert_event "
+        f"SET fired_at = datetime(fired_at, '{config.LOCAL_TZ_OFFSET_HOURS:+d} hours') "
+        "WHERE fired_at LIKE '____-__-__ __:__:__'; "
+        "UPDATE alert_state "
+        f"SET triggered_at = datetime(triggered_at, '{config.LOCAL_TZ_OFFSET_HOURS:+d} hours') "
+        "WHERE triggered_at LIKE '____-__-__ __:__:__'; "
+        "UPDATE alert_state "
+        f"SET cleared_at = datetime(cleared_at, '{config.LOCAL_TZ_OFFSET_HOURS:+d} hours') "
+        "WHERE cleared_at LIKE '____-__-__ __:__:__'",
+    ),
+)
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, column, decl in STRUCTURAL_MIGRATIONS:
+        _ensure_column(conn, table, column, decl)
+
+    applied = {
+        r["key"]
+        for r in conn.execute(
+            "SELECT key FROM meta WHERE key LIKE ?", (META_MIGRATION_PREFIX + "%",)
+        ).fetchall()
+    }
+    for name, sql in DATA_MIGRATIONS:
+        key = META_MIGRATION_PREFIX + name
+        if key in applied:
+            continue
+        conn.executescript(sql)
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (key, now_local_str()),
+        )
+        applied.add(key)
 
 
 def _configure(conn: sqlite3.Connection) -> None:
@@ -68,6 +124,7 @@ def init_db(path: Path | None = None) -> None:
     sql = SCHEMA_PATH.read_text(encoding="utf-8")
     with session(path) as conn:
         conn.executescript(sql)
+        _migrate(conn)
 
         # 默认预算
         row = conn.execute("SELECT COUNT(*) AS c FROM budget").fetchone()
@@ -145,14 +202,14 @@ def set_budget(
 ) -> None:
     conn.execute(
         "INSERT INTO budget (id, daily_usd_micro, monthly_usd_micro, currency, updated_at) "
-        "VALUES (1, ?, ?, ?, datetime('now')) "
+        "VALUES (1, ?, ?, ?, ?) "
         "ON CONFLICT(id) DO UPDATE SET "
         "  daily_usd_micro = excluded.daily_usd_micro, "
         "  monthly_usd_micro = excluded.monthly_usd_micro, "
         "  currency = excluded.currency, "
-        "  updated_at = datetime('now')",
-        (to_micro(daily_usd), to_micro(monthly_usd), currency),
-    )
+        "  updated_at = excluded.updated_at",
+            (to_micro(daily_usd), to_micro(monthly_usd), currency, now_local_str()),
+        )
 
 
 def get_credit_rate(conn: sqlite3.Connection) -> tuple[str, bool]:
