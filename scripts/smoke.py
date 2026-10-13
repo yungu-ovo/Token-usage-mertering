@@ -206,6 +206,13 @@ def main() -> int:
         )
 
     # ---------------------------------------------------------- 写接口往返
+    # 先快照现有告警 ID：下面预算往返可能触发新告警，A-3 的时区断言只认
+    # **本轮新触发**的告警。库里本来就有的近期告警（比如几分钟前一次真实
+    # 重采触发的）没有「刚触发」的属性，拿它们断言会误报。
+    _, alerts_before = fetch(opener, base + "/api/alerts?limit=500")
+    alert_ids_before = {
+        i.get("id") for i in (alerts_before.get("items", []) if isinstance(alerts_before, dict) else [])
+    }
     status, before = fetch(opener, base + "/api/budget")
     if status == 200 and isinstance(before, dict):
         original_daily = before["daily_usd"]
@@ -385,7 +392,7 @@ def main() -> int:
     # ---------------------------------------------------------- A-3 告警时间本地化
     # SQLite 的 datetime('now') 是 UTC，写成它的话 UTC+8 下告警会早 8 小时。
     # 只能拿**刚触发**的告警来判：一条昨天留下的告警本来就该是几十小时前，
-    # 无法与「时区偏移」区分。所以只对 1 小时内的新告警断言，没有就跳过 ——
+    # 无法与「时区偏移」区分。所以只对**本轮新触发**的告警断言，没有就跳过 ——
     # 那条路径由 tests/test_alerts.py 里的 fire() 用例直接守着。
     now_naive = dt.datetime.now()
 
@@ -396,7 +403,11 @@ def main() -> int:
             return None
         return abs((now_naive - fired).total_seconds())
 
-    recent_alerts = [i for i in items_state if (_age(i) or 1e9) <= 3600]
+    # 只认本轮快照之后新出现的告警：库里有几分钟前的真实告警是正常状态，
+    # 不该被这条「必须刚触发」的断言连坐（实测踩过：重采触发 4 条告警，
+    # 15 分钟后跑回归，899 秒偏差误报）。
+    fresh_alerts = [i for i in items_state if i.get("id") not in alert_ids_before]
+    recent_alerts = [i for i in fresh_alerts if (_age(i) or 1e9) <= 3600]
     if recent_alerts:
         worst = max((_age(i) or 0) for i in recent_alerts)
         report(
@@ -407,7 +418,7 @@ def main() -> int:
     else:
         report(
             True,
-            "告警时间本地化（无 1 小时内的新告警，跳过）",
+            "告警时间本地化（本轮未触发新告警，跳过）",
             "由 tests/test_alerts.py 覆盖",
         )
 

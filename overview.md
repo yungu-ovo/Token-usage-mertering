@@ -147,8 +147,9 @@ pytest 144 → **173**，冒烟 52 → **56**，渲染 40 → **42**，隐私 12
 
 ### 遗留
 
-- 新模型 `Step-5-Preview`（222 行）未进占位价格表，成本记 0 并已告警——
-  等用户把代号加进 `placeholder.local.json` 或写真实价。
+- `Step-5-Preview` 已于 2026-10-13 补入 `placeholder.local.json`（占位档位与 hy 系列
+  相同，非真实单价），286 行历史记录经幂等重采自动补齐，未定价告警消除；
+  MTD $85.56 → $114.89。真实积分单价到手后走 `PUT /api/pricing/override`。
 - 登录自启**未安装**（保持机器干净），需要时一条命令：
   `python scripts/install_autostart.py --install`。
 - watchdog 文件监听未做（轮询已满足秒级，不值得多一个依赖）。
