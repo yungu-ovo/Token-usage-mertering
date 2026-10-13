@@ -30,13 +30,13 @@ INSERT INTO usage_fact (
   user_id, machine_id, billing_mode,
   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
   vendor_credit_micro, cost_usd_micro, equivalent_cost_usd_micro, cost_source,
-  latency_ms, status, pricing_version
+  latency_ms, status, pricing_version, cache_source
 ) VALUES (
   :request_id, :ts, :ts_day, :provider, :model_raw, :model, :tool, :project, :session_id,
   :user_id, :machine_id, :billing_mode,
   :input_tokens, :output_tokens, :cache_read_tokens, :cache_write_tokens,
   :vendor_credit_micro, :cost_usd_micro, :equivalent_cost_usd_micro, :cost_source,
-  :latency_ms, :status, :pricing_version
+  :latency_ms, :status, :pricing_version, :cache_source
 )
 ON CONFLICT(request_id) DO UPDATE SET
   ts = excluded.ts,
@@ -59,6 +59,10 @@ ON CONFLICT(request_id) DO UPDATE SET
   output_tokens      = MAX(usage_fact.output_tokens,      excluded.output_tokens),
   cache_read_tokens  = MAX(usage_fact.cache_read_tokens,  excluded.cache_read_tokens),
   cache_write_tokens = MAX(usage_fact.cache_write_tokens, excluded.cache_write_tokens),
+  -- P0-A：直报证据永远压倒估算。本行自带缓存读（rawUsage 直报）时，来源改写为
+  -- direct；否则保留库里已有的来源（可能是上一次写入的估算值）。
+  cache_source = CASE WHEN excluded.cache_read_tokens > 0
+                      THEN 'direct' ELSE usage_fact.cache_source END,
   vendor_credit_micro = COALESCE(excluded.vendor_credit_micro, usage_fact.vendor_credit_micro),
   cost_usd_micro = CASE WHEN excluded.cost_source = 'provider'
                         THEN excluded.cost_usd_micro ELSE usage_fact.cost_usd_micro END,
@@ -211,6 +215,10 @@ def ingest_items(
             "output_tokens": int(item.usage.output_tokens or 0),
             "cache_read_tokens": int(item.usage.cache_read_tokens or 0),
             "cache_write_tokens": int(item.usage.cache_write_tokens or 0),
+            # P0-A：本记录自带缓存读即直报证据；没有则留给 traces 分摊兜底。
+            "cache_source": (
+                "direct" if int(item.usage.cache_read_tokens or 0) > 0 else "trace_estimate"
+            ),
             "vendor_credit_micro": (
                 to_micro(item.usage.credit)
                 if item.usage.credit is not None

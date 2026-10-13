@@ -29,6 +29,7 @@ REQUIRED_KEYS: dict[str, set[str]] = {
         "credit_rate",
         "data_freshness",  # A-4
         "parser",  # B-2
+        "watcher",  # P0-B：自动检测运行态
     },
     "/api/kpi": {"generated_at", "north_star", "today", "tokens", "cache", "per_request", "health"},
     "/api/trend": {"generated_at", "points", "total_cost", "daily_budget"},
@@ -131,6 +132,39 @@ def main() -> int:
         status, payload = fetch(opener, base + path)
         ok = status == 200 and isinstance(payload, dict) and predicate(payload)
         report(ok, f"GET {path}", str(status))
+
+    # ---------------------------------------------------------- P0-B 监控契约
+    _, meta_payload = fetch(opener, base + "/api/meta")
+    if isinstance(meta_payload, dict) and isinstance(meta_payload.get("watcher"), dict):
+        w = meta_payload["watcher"]
+        watcher_keys = {
+            "enabled", "interval_seconds", "calibration_minutes", "last_scan_at",
+            "last_scan_ms", "last_new_records", "tracked_files",
+            "detect_latency_seconds", "stalled",
+        }
+        missing = watcher_keys - set(w)
+        report(not missing, "watcher 块字段完整", f"缺 {sorted(missing)}" if missing else f"interval={w.get('interval_seconds')}s")
+        report(
+            isinstance(w.get("interval_seconds"), int) and w["interval_seconds"] >= 5,
+            "watcher 间隔在合理范围（5~300s）",
+            str(w.get("interval_seconds")),
+        )
+        fresh = meta_payload.get("data_freshness") or {}
+        report(
+            "detect_latency_seconds" in fresh,
+            "data_freshness 带检测延迟（秒）",
+            str(fresh.get("detect_latency_seconds")),
+        )
+        # 采集 dry_run 必须不写库（增量轮次也不能借演练改状态）
+        # 注意：smoke 的 fetch 默认 GET，而 /api/collect 只收 POST（405 会假装成 JSON 错误体）
+        _, dry = fetch(opener, base + "/api/collect?dry_run=1", method="POST")
+        report(
+            isinstance(dry, dict) and dry.get("dry_run") is True,
+            "POST /api/collect?dry_run=1 只解析不写库",
+            str(dry.get("parsed")) if isinstance(dry, dict) else "非 JSON",
+        )
+    else:
+        report(False, "watcher 块字段完整", "/api/meta 未返回 watcher 对象")
 
     # ---------------------------------------------------------- 口径一致性
     # 三个出口必须报同一个数，所以必须用**同一个时间窗**（30 天）。

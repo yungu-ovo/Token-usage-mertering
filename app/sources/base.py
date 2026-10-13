@@ -72,6 +72,26 @@ def first_of(record: dict[str, Any], *paths: str) -> Any:
     return None
 
 
+def max_of(record: dict[str, Any], *paths: str) -> int:
+    """同一 token 概念的多种字段拼写，**组内取最大**。
+
+    为什么不能对 token 组用 ``first_of``：实测 WorkBuddy 的 ``rawUsage`` 里
+    ``cache_read_input_tokens`` 恒为 0、但字段**始终存在**，而真实缓存读在
+    ``prompt_cache_hit_tokens`` 里（1,689/1,694 条非零，占输入 97.4%）。
+    ``first_of`` 的「第一个非空」会被这个恒 0 字段阻断，直报数据整体丢失
+    ——这正是 RK-07 禁止的「静默少算」。
+
+    四组 token（输入/输出/缓存读/缓存写）实测 1,701 条多拼写法共存记录
+    **零分歧**：一致时 ``max`` 与「第一个非空」等价；不一致时取有证据的一侧。
+    """
+    best = 0
+    for path in paths:
+        value = as_int(dig(record, path))
+        if value > best:
+            best = value
+    return best
+
+
 def as_int(value: Any) -> int:
     if value is None or value == "":
         return 0

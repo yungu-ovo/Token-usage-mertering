@@ -10,7 +10,6 @@ from typing import Any
 
 from .. import config
 from ..caliber import (
-    cache_hit_rate,
     cache_saved_usd,
     days_until_budget_exhausted,
     month_bounds,
@@ -48,16 +47,18 @@ def _placeholder_notes(conn: sqlite3.Connection) -> list[str]:
 def _cache_provenance(
     conn: sqlite3.Connection, lo: str, hi: str, layers: dict[str, int]
 ) -> dict[str, Any]:
-    """说清楚缓存数字**从哪来、覆盖了多少**（B-1）。
+    """说清楚缓存数字**从哪来、覆盖了多少**（B-1 / P0-A）。
 
-    这里有个容易误导人的坑：jsonl 不含缓存字段，缓存读是 traces 分摊来的，
-    而 traces 只覆盖部分会话。如果直接用「全库缓存读 ÷ 全库输入」，
-    未覆盖的请求会进分母却不进分子，命中率被**严重低估**
-    （实测会显示 43%，而真实会话级缓存率约 95%）。
+    两种来源必须分开说，因为可信度完全不同：
 
-    所以这里给两个口径：
-    * ``hit_rate``：只按**有 trace 支撑**的请求算，反映真实缓存表现；
-    * ``coverage``：全库有多少比例的请求真的有 trace 支撑，必须跟着一起展示。
+    * ``direct``——请求级 ``rawUsage.prompt_cache_hit_tokens`` 直报（P0-A 修复后
+      99.7% 的记录都有），是**事实**；此时命中率可以拿全窗口做分母；
+    * ``trace_estimate``——会话级 traces 按缓存率分摊的**估算**（只补直报的缺口）。
+
+    历史上只有估算一种来源，而 traces 只覆盖部分会话：如果直接用
+    「全库缓存读 ÷ 全库输入」，未覆盖的请求会进分母却不进分子，命中率被
+    **严重低估**（实测会显示 43%，而真实会话级缓存率约 95%）。所以估算口径下
+    仍然只按**有缓存支撑的样本**算命中率，并把覆盖率一起展示。
     """
     from ..sources.trace_cache import coverage_note
 
@@ -72,35 +73,97 @@ def _cache_provenance(
             "cache_note": "该数据源不提供缓存 token 字段，故不给命中率数字",
         }
 
-    # 有缓存支撑的样本内命中率（排除未覆盖请求对分母的污染）
+    # 窗口内按来源拆分行数；分子/分母只统计有缓存读的行（cache_read = 0 的行
+    # 不进命中率分母——它们要么真的没命中，要么没有证据，混进去只会稀释）。
     row = conn.execute(
-        "SELECT COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(cache_read_tokens),0) AS c "
+        "SELECT "
+        "COALESCE(SUM(CASE WHEN cache_source = 'direct' THEN 1 ELSE 0 END), 0) AS d, "
+        "COALESCE(SUM(CASE WHEN cache_source = 'trace_estimate' THEN 1 ELSE 0 END), 0) AS e, "
+        "COALESCE(SUM(input_tokens), 0) AS i, "
+        "COALESCE(SUM(cache_read_tokens), 0) AS c "
         "FROM usage_fact WHERE ts_day BETWEEN ? AND ? AND cache_read_tokens > 0",
         (lo, hi),
     ).fetchone()
+    direct_rows = int(row["d"] or 0)
+    est_rows = int(row["e"] or 0)
     sample_i = int(row["i"] or 0)
     sample_c = int(row["c"] or 0)
     sample_rate = (sample_c / sample_i) if sample_i else 0.0
 
-    partial = cov < Decimal("1")
+    total_rows_row = conn.execute(
+        "SELECT COUNT(*) AS c FROM usage_fact WHERE ts_day BETWEEN ? AND ?",
+        (lo, hi),
+    ).fetchone()
+    window_rows = int(total_rows_row["c"] or 0)
+    covered_rows = direct_rows + est_rows
+    coverage = (covered_rows / window_rows) if window_rows else 0.0
+
+    if direct_rows > 0 and est_rows == 0:
+        # 纯直报：事实口径。0 就是「这次真的没命中」，所以分母取**全窗口**
+        # （含未命中请求），这才是真实命中率；样本口径只对估算有意义。
+        full_row = conn.execute(
+            "SELECT COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(cache_read_tokens),0) AS c "
+            "FROM usage_fact WHERE ts_day BETWEEN ? AND ?",
+            (lo, hi),
+        ).fetchone()
+        full_i = int(full_row["i"] or 0)
+        full_c = int(full_row["c"] or 0)
+        full_rate = (full_c / full_i) if full_i else 0.0
+        return {
+            "cache_source": "direct",
+            "cache_source_label": "请求级直报",
+            "cache_coverage": coverage,
+            "cache_coverage_requests": covered_rows,
+            "cache_coverage_total": window_rows,
+            "sample_hit_rate": full_rate,
+            "sample_hit_rate_label": f"{full_rate * 100:.1f}%",
+            "cache_estimated": False,
+            "cache_note": (
+                f"缓存读由请求级 rawUsage 直报（prompt_cache_hit_tokens），"
+                f"覆盖本窗口 {covered_rows}/{window_rows} 条请求；"
+                "命中率按全窗口计算（未命中请求也进分母）"
+            ),
+        }
+
+    if est_rows > 0 and direct_rows == 0:
+        # 纯估算：保持历史口径，样本分母 + 覆盖率
+        partial = coverage < 1.0
+        return {
+            "cache_source": "trace_estimate",
+            "cache_source_label": "由 traces 估算",
+            "cache_coverage": coverage,
+            "cache_coverage_requests": covered_rows,
+            "cache_coverage_total": window_rows,
+            "sample_hit_rate": sample_rate,
+            "sample_hit_rate_label": f"{sample_rate * 100:.1f}%",
+            "cache_estimated": True,
+            "cache_note": (
+                f"缓存读由会话级 traces 按缓存率分摊估算；有缓存支撑的请求占 "
+                f"{coverage * 100:.0f}%（{covered_rows}/{window_rows}）。"
+                + (
+                    "命中率按**有缓存支撑的样本**计算——若用全库做分母，"
+                    "未覆盖请求会把数字压低到失真。"
+                    if partial
+                    else ""
+                )
+            ),
+        }
+
+    # 混合（迁移过渡态）：两部分都报数，整体按估算对待（RK-06）
     return {
-        "cache_source": "trace_estimate",
-        "cache_source_label": "由 traces 估算",
-        "cache_coverage": float(cov),
-        "cache_coverage_requests": prov["covered_requests"],
-        "cache_coverage_total": prov["total_requests"],
+        "cache_source": "mixed",
+        "cache_source_label": "直报 + traces 估算",
+        "cache_coverage": coverage,
+        "cache_coverage_requests": covered_rows,
+        "cache_coverage_total": window_rows,
+        "direct_requests": direct_rows,
+        "estimated_requests": est_rows,
         "sample_hit_rate": sample_rate,
         "sample_hit_rate_label": f"{sample_rate * 100:.1f}%",
         "cache_estimated": True,
         "cache_note": (
-            f"缓存读由会话级traces 按缓存率分摊估算；有 trace 支撑的请求占 "
-            f"{float(cov) * 100:.0f}%（{prov['covered_requests']}/{prov['total_requests']}）。"
-            + (
-                "命中率按**有 trace 支撑的样本**计算——若用全库做分母，"
-                "未覆盖请求会把数字压低到失真。"
-                if partial
-                else ""
-            )
+            f"缓存读以请求级直报为主（{direct_rows} 条），另有 {est_rows} 条为 "
+            "traces 分摊估算；命中率按有缓存支撑的样本计算"
         ),
     }
 
@@ -178,18 +241,10 @@ def build(conn: sqlite3.Connection, days: int = 7) -> dict[str, Any]:
     layers["total"] = sum(layers.values())
 
     # ---- 缓存 ----
-    # 命中率分母只取「有 trace 支撑」的请求。缓存读是分摊来的，
-    # 若拿全库输入当分母，未覆盖的请求会把命中率压到失真（实测 95% → 43%）。
+    # 命中率口径由 _cache_provenance 决定：纯直报时全窗口分母（事实），
+    # 含估算时只按有缓存支撑的样本算（否则未覆盖请求把数字压到失真）。
     prov = _cache_provenance(conn, m_lo, m_hi, layers)
-    sample_row = conn.execute(
-        "SELECT COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(cache_read_tokens),0) AS c "
-        "FROM usage_fact WHERE ts_day BETWEEN ? AND ? AND cache_read_tokens > 0",
-        (m_lo, m_hi),
-    ).fetchone()
-    if int(sample_row["c"] or 0) > 0 and int(sample_row["i"] or 0) > 0:
-        hit = Decimal(int(sample_row["c"])) / Decimal(int(sample_row["i"]))
-    else:
-        hit = cache_hit_rate(layers["cache_read"], layers["input"])
+    hit = Decimal(str(prov.get("sample_hit_rate") or 0))
     rows = conn.execute(
         "SELECT model, COALESCE(SUM(cache_read_tokens),0) AS cr FROM usage_fact "
         "WHERE ts_day BETWEEN ? AND ? GROUP BY model",
@@ -206,7 +261,7 @@ def build(conn: sqlite3.Connection, days: int = 7) -> dict[str, Any]:
         "saved_usd": money_str(saved.value),
         "estimated": saved.is_estimated,
         "estimate_method": saved.method,
-        **_cache_provenance(conn, m_lo, m_hi, layers),
+        **prov,
     }
 
     # ---- 单请求均成本 ----

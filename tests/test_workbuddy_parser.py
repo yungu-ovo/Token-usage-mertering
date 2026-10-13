@@ -24,9 +24,9 @@ from app.sources.workbuddy_jsonl import (
 FIXTURE = Path(__file__).parent / "fixtures" / "wb_sample.jsonl"
 
 # 物理行数（含 1 行截断坏 JSON、1 行非对象数组、1 行空行）
-EXPECTED_PHYSICAL_LINES = 15
+EXPECTED_PHYSICAL_LINES = 16
 # 有效记录数
-EXPECTED_RECORDS = 8
+EXPECTED_RECORDS = 9
 
 
 @pytest.fixture(scope="module")
@@ -112,6 +112,44 @@ def test_prompt_cache_hit_write_alias(parsed):
     rec = parsed["msg-0010"]
     assert (rec.cache_read_tokens, rec.cache_write_tokens) == (6000, 1000)
     assert rec.credit == Decimal("12")
+
+
+def test_zero_field_does_not_block_real_cache_value(parsed):
+    """真实形状：cache_read_input_tokens 恒 0 存在时，不能阻断 prompt_cache_hit_tokens。
+
+    这是线上踩过的坑（P0-A）：WorkBuddy 的 rawUsage 里 cache_read_input_tokens
+    始终存在且恒为 0，而真实缓存读在 prompt_cache_hit_tokens（1,689/1,694 条
+    非零，占输入 97.4%）。用 first_of 的「第一个非空」会把直报数据整体丢弃
+    ——属于 RK-07 禁止的「静默少算」。
+    """
+    rec = parsed["msg-0013"]
+    assert rec.input_tokens == 92879
+    assert rec.output_tokens == 1534
+    assert rec.cache_read_tokens == 90112
+    assert rec.cache_write_tokens == 0
+    assert rec.model == "Step-5-Preview"
+
+
+def test_max_of_takes_group_maximum():
+    """组内取最大：多拼写共存时取有证据的一侧（实测四组零分歧，安全）。"""
+    from app.sources.base import max_of
+
+    record = {
+        "providerData": {
+            "rawUsage": {
+                "prompt_tokens": 100,
+                "cache_read_input_tokens": 0,
+                "prompt_cache_hit_tokens": 80,
+            }
+        }
+    }
+    assert max_of(record, "providerData.rawUsage.prompt_tokens") == 100
+    assert max_of(
+        record,
+        "providerData.rawUsage.cache_read_input_tokens",
+        "providerData.rawUsage.prompt_cache_hit_tokens",
+    ) == 80
+    assert max_of(record, "nonexistent.path", "also.missing") == 0
 
 
 # ------------------------------------------------------------------ 时间

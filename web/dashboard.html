@@ -344,6 +344,11 @@
       <span id="chip-fresh-text">—</span>
     </span>
 
+    <span class="chip" id="chip-watch" title="自动检测与记录的运行状态" hidden>
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+      <span id="chip-watch-text">—</span>
+    </span>
+
     <span class="chip" id="chip-caliber" title="当前成本口径">口径 —</span>
 
     <span class="chip demo" id="chip-credit" title="积分折算率未校准，厂商口径成本仅供参考" hidden>
@@ -633,7 +638,8 @@
     alerts: null,
     tableView: { label: "最近 8 条记录", query: "" },
     collectNote: "",
-    errors: []
+    errors: [],
+    autoTimer: null   // P0-B：监控开启时的 30s 自动刷新定时器
   };
 
   /* ================= 工具函数 ================= */
@@ -658,6 +664,14 @@
     return Math.abs(v) >= 1000 ? curSym() + (v/1000).toFixed(2) + "k" : money(usd);
   }
   function pct(n, d){ d = (d === undefined) ? 1 : d; return (num(n) * 100).toFixed(d) + "%"; }
+  function fmtLatency(sec){
+    // 检测延迟的人话版本：实时监控下用秒/分钟，别甩给用户一串小数
+    sec = num(sec);
+    if (sec < 60) return Math.round(sec) + " 秒";
+    if (sec < 3600) return Math.round(sec / 60) + " 分钟";
+    if (sec < 86400) return (sec / 3600).toFixed(1) + " 小时";
+    return (sec / 86400).toFixed(1) + " 天";
+  }
   function mTok(n){
     n = num(n);
     if (n >= 1e6) return (n/1e6).toFixed(2) + "M";
@@ -727,6 +741,9 @@
     days = days || state.range;
     state.range = days;
     state.errors = [];
+    // P0-B：自动刷新。监控开着时每 30s 拉一次数据，「调用即记录」才看得见；
+    // 每次 load 先清掉旧定时器，手动切区间/点采集时自然重启计时。
+    if (state.autoTimer){ clearTimeout(state.autoTimer); state.autoTimer = null; }
     setBusy(true);
 
     // 先把还在加载的容器铺上骨架，避免空白闪烁
@@ -764,6 +781,11 @@
       state.tableView = { label: "最近 8 条记录 · 近 " + days + " 天", query: "" };
       setBusy(false);
       renderAll();
+      // 监控开启且本页可见时，排下一次自动刷新
+      var w = (state.meta && state.meta.watcher) || {};
+      if (w.enabled && !document.hidden){
+        state.autoTimer = setTimeout(function(){ load(state.range); }, 30000);
+      }
     });
   }
 
@@ -916,6 +938,40 @@
     el("chip-caliber").textContent = "口径 " + (state.kpi && state.kpi.north_star
       ? state.kpi.north_star.cost_caliber_label : "API 等价成本");
 
+    // P0-B：自动检测与记录的运行态。监控开着时必须让人一眼看见
+    // 「它自己在采」，否则用户无法区分「没有新调用」和「采集坏了」。
+    var watch = meta.watcher || {};
+    var wChip = el("chip-watch"), wText = el("chip-watch-text");
+    if (watch.enabled){
+      wChip.hidden = false;
+      wChip.style.cursor = "default";
+      if (watch.stalled){
+        wChip.className = "chip demo";
+        wText.textContent = "监控停滞";
+        wChip.title = "自动采集已开启，但采集轮很久没有完成——这期间的调用可能没被记录。请重启服务或点「刷新」补采";
+      } else {
+        wChip.className = "chip ok";
+        var lat = watch.detect_latency_seconds;
+        if (lat !== null && lat !== undefined && lat < 3600){
+          wText.textContent = "实时监控中 · 最近记录 " + fmtLatency(lat) + "前";
+        } else {
+          wText.textContent = "实时监控中 · 每 " + num(watch.interval_seconds) + "s";
+        }
+        wChip.title = "服务每 " + num(watch.interval_seconds) + "s 增量扫描一次本机会话转录；"
+          + "每 " + num(watch.calibration_minutes) + "min 全量校准一次。"
+          + "上次扫描 " + esc(watch.last_scan_at || "—")
+          + (num(watch.last_scan_ms) > 0 ? "，耗时 " + num(watch.last_scan_ms) + "ms" : "")
+          + "；跟踪 " + num(watch.tracked_files) + " 个文件";
+      }
+    } else {
+      wChip.hidden = false;
+      wChip.className = "chip demo";
+      wChip.style.cursor = "pointer";
+      wText.textContent = "监控已关闭";
+      wChip.title = "自动采集未开启（TUM_AUTO_COLLECT=0）。点击立即采集一次；"
+        + "设为 1 重启服务即可恢复「调用即记录」";
+    }
+
     var creditChip = el("chip-credit");
     if (cr.calibrated === false && cr.rate){
       creditChip.hidden = false;
@@ -1002,12 +1058,18 @@
     if (crTok > 0){
       el("hit-rate").textContent = pct(ca.hit_rate, 1);
       el("hit-rate").title = ca.cache_note || "";
-      // B-1：缓存读来自 traces 分摊估算，必须把覆盖率一起亮出来，
-      // 否则用户会把「命中率」当成全量口径，而它其实只覆盖部分请求。
+      // B-1 / P0-A：估算来源必须把覆盖率一起亮出来，否则用户会把「命中率」
+      // 当成全量口径，而它其实只覆盖部分请求；直报来源则亮出来源本身。
       var cov = ca.cache_coverage;
-      var covTxt = (ca.cache_coverage_total !== undefined && num(cov) < 1)
-        ? '<span class="wn">· traces 覆盖 ' + (num(cov) * 100).toFixed(0) + '% 请求</span>'
-        : "";
+      var covTxt = "";
+      if (ca.cache_source === "direct"){
+        covTxt = '<span class="ok">· 请求级直报</span>';
+      } else if (ca.cache_source === "mixed"){
+        covTxt = '<span class="wn">· 直报 ' + num(ca.direct_requests) +
+          ' + 估算 ' + num(ca.estimated_requests) + ' 条</span>';
+      } else if (ca.cache_coverage_total !== undefined && num(cov) < 1) {
+        covTxt = '<span class="wn">· traces 覆盖 ' + (num(cov) * 100).toFixed(0) + '% 请求</span>';
+      }
       el("hit-meta").innerHTML = '缓存读 <b class="num">' + mTok(crTok) + '</b> · ' +
         esc(ca.estimate_method || "") + covTxt;
     } else {
@@ -1609,8 +1671,9 @@
     fetchJSON("/api/collect", { method: "POST" })
       .then(function(d){
         var ing = (d && d.ingest) || {};
-        state.collectNote = "采集完成：新增 " + num(ing.inserted) + " 条，更新 " +
-          num(ing.updated) + " 条，解析 " + num(d && d.parsed) + " 条";
+        var mode = (d && d.mode === "incremental") ? "增量" : "全量";
+        state.collectNote = "采集完成（" + mode + "）：新增 " + num(ing.inserted) +
+          " 条，更新 " + num(ing.updated) + " 条，解析 " + num(d && d.parsed) + " 条";
         return load(state.range);
       })
       .catch(function(e){
@@ -1636,6 +1699,12 @@
 
   el("btn-refresh").addEventListener("click", doRefresh);
   el("btn-export").addEventListener("click", exportCSV);
+
+  // P0-B：监控关闭时，点顶栏芯片 = 立即采一次（与新鲜度芯片一致的交互）
+  el("chip-watch").addEventListener("click", function(){
+    var w = (state.meta && state.meta.watcher) || {};
+    if (!w.enabled) doRefresh();
+  });
 
   // C-1 告警：顶栏按钮 + 横幅里的「查看全部」
   el("btn-alerts").addEventListener("click", openAlerts);

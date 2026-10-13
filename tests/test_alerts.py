@@ -197,3 +197,51 @@ def test_parse_stats_rate_uses_usage_lines_as_denominator():
     s = ParseStats(scanned=10000, usage_lines=1000, parsed=990)
     assert s.rate() == pytest.approx(0.99)
     assert ParseStats().rate() is None
+
+
+# ================================================================== P0-B 采集进程健康度
+def test_collector_alert_fires_when_scans_stalled(conn, monkeypatch):
+    """自动采集开着但轮次很久没完成 → 这期间的调用不会被记录，必须告警。"""
+    from app import config
+    from app.timeutil import now_local_str
+    import datetime as dt
+
+    monkeypatch.setattr(config, "AUTO_COLLECT", True)
+    monkeypatch.setattr(config, "WATCH_INTERVAL_SECONDS", 15)
+    stale = (dt.datetime.now() - dt.timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+    db.set_meta(conn, "last_collect_at", stale)
+
+    assert alerts.evaluate_collector(conn) is True
+    items = [i for i in alerts.recent(conn) if i["category"] == "collector"]
+    assert items and "自动采集" in items[0]["message"]
+
+
+def test_collector_alert_clears_when_scans_resume(conn, monkeypatch):
+    from app import config
+    from app.timeutil import now_local_str
+
+    monkeypatch.setattr(config, "AUTO_COLLECT", True)
+    monkeypatch.setattr(config, "WATCH_INTERVAL_SECONDS", 15)
+    db.set_meta(conn, "last_collect_at", now_local_str())
+    assert alerts.evaluate_collector(conn) is False
+    assert not alerts._is_active(conn, alerts.STALL_KEY)
+
+
+def test_collector_alert_silent_when_auto_collect_off(conn, monkeypatch):
+    """用户主动关了自动采集：不告警（顶栏芯片已经说明「监控已关闭」）。"""
+    from app import config
+    import datetime as dt
+
+    monkeypatch.setattr(config, "AUTO_COLLECT", False)
+    stale = (dt.datetime.now() - dt.timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+    db.set_meta(conn, "last_collect_at", stale)
+    assert alerts.evaluate_collector(conn) is False
+    assert not alerts._is_active(conn, alerts.STALL_KEY)
+
+
+def test_collector_alert_silent_without_any_collect(conn, monkeypatch):
+    """从未采集过：不告警——新鲜度已经在提示「先去采一次」了。"""
+    from app import config
+
+    monkeypatch.setattr(config, "AUTO_COLLECT", True)
+    assert alerts.evaluate_collector(conn) is False

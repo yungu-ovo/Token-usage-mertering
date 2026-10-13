@@ -25,6 +25,10 @@ META_MIGRATION_PREFIX = "migration:"
 STRUCTURAL_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     # A-1：告警事件需要「系统已自动解除」这一态，否则过期告警永远挂在界面上
     ("alert_event", "resolved_at", "TEXT"),
+    # P0-A：缓存读来源（direct 直报 / trace_estimate traces 分摊）。
+    # ALTER TABLE 带 DEFAULT 会把已有行整体填成默认值——历史行的缓存读本来就
+    # 全部来自 traces 分摊，填 trace_estimate 恰好是事实，无需数据迁移。
+    ("usage_fact", "cache_source", "TEXT NOT NULL DEFAULT 'trace_estimate'"),
 )
 
 # 数据迁移跑一次就记进 meta，绝不重复执行。

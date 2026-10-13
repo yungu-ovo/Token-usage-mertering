@@ -19,7 +19,7 @@ from .caliber import days_until_budget_exhausted, month_end_forecast
 from .db import get_budget, get_meta
 from .money import dec, money_str, to_micro
 from .queries.common import COST_EXPR, fetch_cost, month_range
-from .timeutil import now_local_str
+from .timeutil import now_local, now_local_str
 
 UNPRICED_KEY = "unpriced:models"
 PARSER_KEY = "parser:success_rate"
@@ -300,6 +300,49 @@ def evaluate_parser(conn: sqlite3.Connection) -> bool:
     return False
 
 
+# ------------------------------------------------------------------ 采集进程健康度（P0-B）
+STALL_KEY = "collector:stalled"
+# 超过 3 倍轮询间隔（且至少 5 分钟）没有采集轮完成，就认为调度死了。
+# 注意区分解「真没用模型」和「采集坏了」：本判断只看**采集轮有没有在跑**，
+# 轮次在跑但扫不到新数据是正常空转，不告警。
+STALL_MIN_MINUTES = 5
+
+
+def evaluate_collector(conn: sqlite3.Connection) -> bool:
+    """自动采集开着，但采集轮很久没完成——调度线程可能死了（P0-B）。"""
+    if not config.AUTO_COLLECT:
+        clear(conn, STALL_KEY)
+        return False
+
+    last = get_meta(conn, "last_collect_at")
+    if not last:
+        # 从未采集过：不告警（数据新鲜度已经在提示「先去采一次」）
+        clear(conn, STALL_KEY)
+        return False
+
+    threshold_min = max(STALL_MIN_MINUTES, config.WATCH_INTERVAL_SECONDS * 3 / 60)
+    try:
+        moment = dt.datetime.fromisoformat(str(last))
+    except (TypeError, ValueError):
+        return False
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=now_local().tzinfo)
+    age_min = (now_local() - moment).total_seconds() / 60
+
+    if age_min >= threshold_min:
+        return fire(
+            conn,
+            STALL_KEY,
+            "warn",
+            "collector",
+            f"自动采集已开启，但已经 {age_min:.0f} 分钟没有完成过采集轮"
+            f"（阈值 {threshold_min:.0f} 分钟）。调度可能已停止，"
+            "这期间的调用不会被记录——请重启服务或点「采集」补采",
+        )
+    clear(conn, STALL_KEY)
+    return False
+
+
 # ------------------------------------------------------------------ 定时任务
 def evaluate_scheduled(conn: sqlite3.Connection) -> dict[str, int]:
     """每小时跑一次：预算 + 烧钱速率 + 预测耗尽 + 未定价 + 采集健康度。"""
@@ -308,6 +351,7 @@ def evaluate_scheduled(conn: sqlite3.Connection) -> dict[str, int]:
         "burn_rate": int(evaluate_burn_rate(conn)),
         "unpriced": int(evaluate_unpriced(conn)),
         "parser": int(evaluate_parser(conn)),
+        "collector": int(evaluate_collector(conn)),
     }
     # 兜底：任何一条「还挂着但已经不成立」的告警，在这里统一收口
     result["stale_resolved"] = sweep_stale(conn)

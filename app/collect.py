@@ -1,10 +1,17 @@
-"""采集流水线（B-1）。
+"""采集流水线（B-1 / P0-B）。
 
 早先这条流水线只存在于 ``scripts/ingest_workbuddy.py`` 里，**服务层想采也采不了**——
 于是界面上那个「重新采集」按钮只能重算聚合，数据永远停在最后一次手动跑脚本的时刻（A-2）。
 
 这里把它抽成服务层可直接调用的函数；脚本退化为薄 CLI 包装，两边共用同一条路径，
 不会再出现「脚本能采、服务不能采」的分裂。
+
+P0-B 起支持**双模扫描**（自动检测与记录）：
+
+* ``incremental=True``（默认）：文件水位增量，只读新增的完整行。15s 一轮、
+  毫秒级成本，调用发生后秒级可查；traces 回填与全量重建留给校准轮。
+* ``incremental=False``：全量重扫（校准轮 / ``--full`` / ``?full=1``），
+  负责 RK-07 的权威解析成功率分母、缓存回填与聚合表自愈。
 
 隐私约束不变：全程只读 ``<home>/.workbuddy``，只按白名单取值（RK-04）。
 """
@@ -14,6 +21,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sqlite3
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +31,25 @@ from .aggregator import rebuild_all
 from .ingest import ingest_items
 from .models import IngestItem
 from .sources.base import ParseStats, ParsedRecord
+from .sources.incremental import (
+    META_PARSER_VERSION_KEY,
+    scan_new,
+)
 from .sources.trace_cache import backfill
 from .sources.workbuddy_jsonl import WorkBuddyJsonlParser
 from .timeutil import now_local, now_local_str
+
+# 进程内采集互斥：调度器的轮询与用户手动点「采集」可能撞车
+# （FastAPI 的 sync 端点跑在线程池）。SQLite 的 BEGIN IMMEDIATE 虽能串行化写入，
+# 但等锁超时会抛 "database is locked"——加锁让请求排队而不是报错。
+COLLECT_LOCK = threading.Lock()
+
+# watcher 元信息键（/api/meta 与顶栏芯片读取）
+META_WATCH_LAST_SCAN_AT = "watcher_last_scan_at"
+META_WATCH_LAST_SCAN_MS = "watcher_last_scan_ms"
+META_WATCH_LAST_NEW_RECORDS = "watcher_last_new_records"
+META_WATCH_TRACKED_FILES = "watcher_tracked_files"
+META_WATCH_MODE = "watcher_last_mode"
 
 # ---------------------------------------------------------------- 占位价格配置
 # WorkBuddy 的模型名是内部代号，公开价格表查不到。为了让成本链路可端到端验证，
@@ -126,7 +151,11 @@ def _to_item(record: ParsedRecord) -> IngestItem:
 
 
 def _record_parser_stats(conn: sqlite3.Connection, stats: ParseStats) -> dict[str, Any]:
-    """把解析健康度写进 meta，供告警与 /api/meta 读取。"""
+    """把解析健康度写进 meta，供告警与 /api/meta 读取。
+
+    调用方负责把关「该不该写」：见 ``collect()`` 里的 mode/usage_lines 判断——
+    没有用量样本的轮次写进来只会得到误导性的 0.000000。
+    """
     info = stats.as_dict()
     db.set_meta(conn, alerts.META_PARSER_VERSION, str(info["version"]))
     db.set_meta(conn, alerts.META_PARSER_SCANNED, str(info["scanned"]))
@@ -167,6 +196,7 @@ def data_freshness(conn: sqlite3.Connection) -> dict[str, Any]:
         }
 
     hours = _hours_since(latest_ts)
+    latency = _seconds_since(latest_ts)
     return {
         "has_data": True,
         "row_count": count,
@@ -174,6 +204,7 @@ def data_freshness(conn: sqlite3.Connection) -> dict[str, Any]:
         "last_record_day": latest_day,
         "freshness_hours": None if hours is None else round(hours, 1),
         "is_stale": bool(hours is not None and hours >= STALE_HOURS),
+        "detect_latency_seconds": None if latency is None else round(latency, 1),
         "note": "" if hours is None else _freshness_note(hours),
     }
 
@@ -188,12 +219,26 @@ def _hours_since(ts: str) -> float | None:
     return (now_local() - moment).total_seconds() / 3600.0
 
 
+def _seconds_since(ts: str) -> float | None:
+    """最新记录距今多少秒（监控芯片用：小时粒度在实时模式下太粗）。"""
+    try:
+        moment = dt.datetime.fromisoformat(str(ts))
+    except (TypeError, ValueError):
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=now_local().tzinfo)
+    return max(0.0, (now_local() - moment).total_seconds())
+
+
 def _freshness_note(hours: float) -> str:
     if hours >= STALE_HOURS:
         return f"数据已滞后 {hours / 24:.1f} 天，点「采集」拉取最新用量"
     if hours >= 1:
         return f"最新数据距今 {hours:.1f} 小时"
-    return f"最新数据距今 {hours * 60:.0f} 分钟"
+    minutes = hours * 60
+    if minutes >= 1:
+        return f"最新数据距今 {minutes:.0f} 分钟"
+    return "最新数据就在刚刚"
 
 
 # ---------------------------------------------------------------- 主流程
@@ -206,17 +251,41 @@ def collect(
     apply_placeholder: bool = False,
     backfill_cache: bool = True,
     dry_run: bool = False,
+    incremental: bool = True,
 ) -> dict[str, Any]:
     """跑完一整条采集流水线。调用方负责事务（推荐 ``db.tx()``）。
 
-    顺序：解析 →（可选占位价格）→ 幂等落库 → traces 回填缓存 → 重算聚合 → 告警巡检。
-    ``dry_run=True`` 只解析不写库，用于演练与接口自检。
+    * ``dry_run=True``：只解析不写库（**且永远走全量**——演练的语义是
+      「看看还有多少没采」，水位只对真采集有意义），连 meta 都不碰。
+    * ``incremental=True``（默认）：水位增量扫描 → 幂等落库 → 重建受影响日期
+      → 告警巡检。解析器版本变化时本轮自动升级为全量（版本自愈）。
+    * ``incremental=False``：全量重扫 → 落库 → traces 回填缓存 →
+      ``rebuild_all`` 自愈 → 告警巡检（校准轮语义）。
     """
-    records, stats = parse_records(since=since, home=home)
+    parser = build_parser(home)
+    started = time.monotonic()
+
+    # 版本自愈：解析器升过版本（字段语义变了）就作废水位全量重扫一次，
+    # 不让「修了 parser 但历史行没重采」成为隐性坑（P0-A 的缓存字段就是这么丢的）。
+    stored_version = db.get_meta(conn, META_PARSER_VERSION_KEY)
+    version_changed = bool(stored_version) and stored_version != parser.version
+    if incremental and version_changed:
+        incremental = False
+
+    records: list[ParsedRecord]
+    if incremental and not dry_run:
+        records, stats, scan_info = scan_new(conn, parser=parser, home=home)
+        mode = "incremental"
+    else:
+        records, stats = parse_records(since=since, home=home)
+        scan_info = {"files_seen": len(parser.discover()), "mode": "full"}
+        mode = "full"
+
     parser_info = stats.as_dict()
 
     summary: dict[str, Any] = {
         "dry_run": dry_run,
+        "mode": mode,
         "parsed": len(records),
         "parser": parser_info,
         "placeholder": None,
@@ -224,6 +293,7 @@ def collect(
         "cache": None,
         "agg_rows": 0,
         "alerts": {},
+        "scan": scan_info,
     }
 
     if dry_run:
@@ -231,7 +301,14 @@ def collect(
         summary["note"] = "演练模式：只解析未写库"
         return summary
 
-    _record_parser_stats(conn, stats)
+    # 解析健康度（RK-07）只在「全量轮」或「本轮真有用量样本」时写：
+    # 增量轮读到几行非用量记录时 usage_lines = 0，成功率是「没有样本」而非 0%，
+    # 写个 0.000000 进去会让 /api/meta 的解析器健康假装亮红灯。
+    if mode == "full" or stats.usage_lines > 0:
+        _record_parser_stats(conn, stats)
+    else:
+        db.set_meta(conn, "last_collect_at", now_local_str())
+    db.set_meta(conn, META_PARSER_VERSION_KEY, parser.version)
 
     if apply_placeholder:
         summary["placeholder"] = apply_placeholder_prices(placeholder_file)
@@ -239,8 +316,10 @@ def collect(
     if not records:
         summary["note"] = "没有可写入的记录"
         # 即便没有新记录也要巡检：解析成功率可能刚刚跌破阈值
-        summary["agg_rows"] = rebuild_all(conn)
+        summary["agg_rows"] = rebuild_all(conn) if mode == "full" else 0
         summary["alerts"] = alerts.evaluate_scheduled(conn)
+        if mode == "incremental":
+            _record_watch_meta(conn, started, 0, scan_info, mode)
         return summary
 
     items = [_to_item(r) for r in records]
@@ -249,20 +328,51 @@ def collect(
     )
     summary["ingest"] = ingest_summary
 
-    if backfill_cache:
-        summary["cache"] = backfill(conn, home, apply=True)
+    if mode == "full":
+        # 校准轮：traces 回填 + 全量重建（自愈任何聚合漂移）
+        if backfill_cache:
+            summary["cache"] = backfill(conn, home, apply=True)
+        summary["agg_rows"] = rebuild_all(conn)
+    else:
+        # 增量轮：ingest_items 内部已按 touched days 重建；这里只补
+        # 「没有新记录但水位推进过」的空转轮次统计
+        summary["agg_rows"] = 0
 
-    summary["agg_rows"] = rebuild_all(conn)
     summary["alerts"] = alerts.evaluate_scheduled(conn)
     summary["freshness"] = data_freshness(conn)
+    if mode == "incremental":
+        _record_watch_meta(
+            conn, started, ingest_summary.get("inserted", 0)
+            + ingest_summary.get("updated", 0), scan_info, mode,
+        )
     return summary
+
+
+def _record_watch_meta(
+    conn: sqlite3.Connection,
+    started: float,
+    new_records: int,
+    scan_info: dict[str, Any],
+    mode: str,
+) -> None:
+    """把本轮扫描的健康信号写进 meta（顶栏芯片与 /api/meta 读取）。"""
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    db.set_meta(conn, META_WATCH_LAST_SCAN_AT, now_local_str())
+    db.set_meta(conn, META_WATCH_LAST_SCAN_MS, str(elapsed_ms))
+    db.set_meta(conn, META_WATCH_LAST_NEW_RECORDS, str(new_records))
+    db.set_meta(
+        conn, META_WATCH_TRACKED_FILES, str(scan_info.get("tracked_files") or 0)
+    )
+    db.set_meta(conn, META_WATCH_MODE, mode)
 
 
 def collect_stats_line(summary: dict[str, Any]) -> str:
     """给人看的一行摘要（脚本与日志共用）。"""
     ing = summary.get("ingest") or {}
+    mode = summary.get("mode") or "full"
+    tag = "增量" if mode == "incremental" else "全量"
     return (
-        f"解析 {summary.get('parsed', 0)} 条 · 新增 {ing.get('inserted', 0)} "
+        f"[{tag}] 解析 {summary.get('parsed', 0)} 条 · 新增 {ing.get('inserted', 0)} "
         f"更新 {ing.get('updated', 0)} 忽略 {ing.get('ignored', 0)}"
     )
 
@@ -275,5 +385,9 @@ __all__ = [
     "data_freshness",
     "load_placeholder_config",
     "parse_records",
+    "COLLECT_LOCK",
+    "META_WATCH_LAST_SCAN_AT",
+    "META_WATCH_LAST_NEW_RECORDS",
+    "META_WATCH_TRACKED_FILES",
     "STALE_HOURS",
 ]

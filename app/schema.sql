@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS usage_fact (
   output_tokens     INTEGER NOT NULL DEFAULT 0,
   cache_read_tokens INTEGER NOT NULL DEFAULT 0,
   cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  -- 缓存读的来源：direct = 请求级 rawUsage 直报（prompt_cache_hit_tokens 等）；
+  -- trace_estimate = traces 会话级分摊的估算值。仅 cache_read_tokens > 0 时有意义。
+  cache_source      TEXT    NOT NULL DEFAULT 'trace_estimate',
   vendor_credit_micro INTEGER,                  -- 厂商原始积分 ×1e6，仅存档审计
   cost_usd_micro    INTEGER NOT NULL DEFAULT 0, -- 厂商口径成本（微美元）
   equivalent_cost_usd_micro INTEGER,            -- API 等价成本（微美元），口径二
@@ -157,4 +160,18 @@ CREATE INDEX IF NOT EXISTS idx_alert_fired ON alert_event(fired_at DESC);
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL DEFAULT ''
+) STRICT;
+
+-- ============================================================ 采集水位（P0-B）
+-- 文件级增量扫描的断点。只存**相对 WORKBUDDY_HOME 的路径**与数值，
+-- 不存绝对路径/用户名，也不存任何内容字段（RK-04）。
+-- offset 只推进到「最后一个完整行末」——正在被写入的半行留给下一轮，
+-- 否则残行会被当成坏行跳过，该条用量永久丢失（静默少算）。
+CREATE TABLE IF NOT EXISTS source_file_state (
+  path       TEXT PRIMARY KEY,   -- 相对路径，如 projects/<slug>/<session>.jsonl
+  kind       TEXT    NOT NULL DEFAULT 'jsonl',
+  offset     INTEGER NOT NULL DEFAULT 0,  -- 已消费到的字节偏移
+  size       INTEGER NOT NULL DEFAULT 0,  -- 上次看到的文件大小
+  mtime_ns   INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT    NOT NULL
 ) STRICT;

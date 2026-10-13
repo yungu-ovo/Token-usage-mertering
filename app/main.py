@@ -97,7 +97,46 @@ def api_meta() -> dict[str, Any]:
             # B-2：解析器版本与成功率，数据源改格式时这里会先掉下来
             "parser": parser,
             "auto_collect": config.AUTO_COLLECT,
+            # P0-B：自动检测与记录的运行态（顶栏「实时监控中」芯片的数据源）
+            "watcher": _watcher_block(conn),
         }
+
+
+def _watcher_block(conn) -> dict[str, Any]:
+    """采集监控的运行态。
+
+    ``stalled`` 由前端按「开启但 last_scan_at 老于 3 倍间隔」即时判定——
+    等服务端每小时巡检才发现就太晚了；服务端的 ``collector:stalled``
+    告警作为持久记录兜底。
+    """
+    from .db import get_meta
+    from .timeutil import now_local
+
+    last_scan_at = get_meta(conn, collect_mod.META_WATCH_LAST_SCAN_AT)
+    stalled = False
+    if config.AUTO_COLLECT and last_scan_at:
+        try:
+            moment = dt.datetime.fromisoformat(last_scan_at)
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=now_local().tzinfo)
+            age_s = (now_local() - moment).total_seconds()
+            stalled = age_s > max(300, config.WATCH_INTERVAL_SECONDS * 3)
+        except (TypeError, ValueError):
+            stalled = False
+    freshness = collect_mod.data_freshness(conn)
+    return {
+        "enabled": config.AUTO_COLLECT,
+        "interval_seconds": config.WATCH_INTERVAL_SECONDS,
+        "calibration_minutes": config.CALIBRATION_MINUTES,
+        "last_scan_at": last_scan_at,
+        "last_scan_ms": int(get_meta(conn, collect_mod.META_WATCH_LAST_SCAN_MS) or 0),
+        "last_new_records": int(
+            get_meta(conn, collect_mod.META_WATCH_LAST_NEW_RECORDS) or 0
+        ),
+        "tracked_files": int(get_meta(conn, collect_mod.META_WATCH_TRACKED_FILES) or 0),
+        "detect_latency_seconds": freshness.get("detect_latency_seconds"),
+        "stalled": stalled,
+    }
 
 
 # ================================================================ 采集
@@ -328,18 +367,27 @@ def api_collect(
     since: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     dry_run: bool = False,
     backfill_cache: bool = True,
+    full: bool = False,
 ) -> dict[str, Any]:
-    """真·采集：解析本机会话转录 → 幂等落库 → traces 回填缓存 → 重算聚合 → 告警巡检。
+    """真·采集：解析本机会话转录 → 幂等落库 → 重算 → 告警巡检。
 
-    ``dry_run=1`` 只解析不写库，用于演练和自检（回归测试走这条路径，避免污染临时库）。
+    默认走**增量**（文件水位，只读新增行）；``full=1`` 强制全量重扫
+    （修了 parser、怀疑水位漂移时用）。``dry_run=1`` 只解析不写库，
+    且固定按全量口径演练（「看看还有多少没采」），用于接口自检。
     """
     if dry_run:
         with db.session() as conn:
             return collect_mod.collect(conn, since=since, dry_run=True)
-    with db.tx() as conn:
-        return collect_mod.collect(
-            conn, since=since, backfill_cache=backfill_cache
-        )
+    # 手动采集优先于定时轮：排队等锁而不是报 "database is locked"
+    if not collect_mod.COLLECT_LOCK.acquire(timeout=120):
+        raise HTTPException(status_code=503, detail="另一轮采集正在进行，请稍后再试")
+    try:
+        with db.tx() as conn:
+            return collect_mod.collect(
+                conn, since=since, backfill_cache=backfill_cache, incremental=not full
+            )
+    finally:
+        collect_mod.COLLECT_LOCK.release()
 
 
 @app.get("/api/health", tags=["ops"])

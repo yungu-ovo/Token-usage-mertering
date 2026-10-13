@@ -205,3 +205,88 @@ def test_trend_points_sum_exactly_to_total(conn):
     points_sum = sum(Decimal(p["cost"]) for p in payload["points"])
     assert points_sum == Decimal(payload["total_cost"])
     assert payload["total_cost"] == "5.63"
+
+
+# ------------------------------------------------------------------ 缓存口径（P0-A）
+def _cache_item(rid: str, inp: int, cache_read: int) -> IngestItem:
+    return IngestItem.model_validate(
+        {
+            "request_id": rid,
+            "ts": TS,
+            "provider": "workbuddy",
+            "model": "gpt-5",
+            "session_id": "s-" + rid,
+            "usage": {
+                "input_tokens": inp,
+                "output_tokens": 10,
+                "cache_read_tokens": cache_read,
+            },
+        }
+    )
+
+
+def test_cache_provenance_direct_when_all_reported(conn):
+    """全部直报时：来源标 direct、不算估算、命中率按全窗口分母。"""
+    ingest_items(
+        conn,
+        [
+            _cache_item("d1", inp=9_000, cache_read=8_000),
+            _cache_item("d2", inp=1_000, cache_read=0),
+        ],
+    )
+    conn.commit()
+    block = kpi.build(conn, days=7)["cache"]
+    assert block["cache_source"] == "direct"
+    assert block["cache_source_label"] == "请求级直报"
+    assert block["cache_estimated"] is False
+    # 8000 / 10000——含未命中那条做分母，因为直报是事实不是抽样
+    assert block["hit_rate"] == pytest.approx(0.8)
+    assert block["cache_coverage"] == pytest.approx(0.5)  # 1/2 条有缓存读
+
+
+def test_cache_provenance_estimate_keeps_sample_denominator(conn):
+    """纯 traces 估算时：命中率只按有缓存支撑的样本算（历史口径不破）。"""
+    ingest_items(conn, [_cache_item("e1", inp=10_000, cache_read=0)])
+    conn.commit()
+    # 手工写一条估算值，模拟 backfill 的产物
+    conn.execute(
+        "UPDATE usage_fact SET cache_read_tokens = 9000, cache_source = 'trace_estimate' "
+        "WHERE request_id = 'e1'"
+    )
+    conn.commit()
+    block = kpi.build(conn, days=7)["cache"]
+    assert block["cache_source"] == "trace_estimate"
+    assert block["cache_estimated"] is True
+    assert block["hit_rate"] == pytest.approx(0.9)
+
+
+def test_cache_provenance_none_when_no_cache_data(conn):
+    ingest_items(conn, [_cache_item("n1", inp=10_000, cache_read=0)])
+    conn.commit()
+    block = kpi.build(conn, days=7)["cache"]
+    assert block["cache_source"] == "none"
+    assert block["hit_rate"] == 0
+
+
+def test_cache_provenance_mixed_reports_both_counts(conn):
+    """混合来源：两类请求数都报出来，整体按估算对待（RK-06）。"""
+    ingest_items(
+        conn,
+        [
+            _cache_item("m1", inp=9_000, cache_read=8_000),
+            _cache_item("m2", inp=10_000, cache_read=0),
+        ],
+    )
+    conn.commit()
+    conn.execute(
+        "UPDATE usage_fact SET cache_read_tokens = 9000, cache_source = 'trace_estimate' "
+        "WHERE request_id = 'm2'"
+    )
+    conn.commit()
+    block = kpi.build(conn, days=7)["cache"]
+    assert block["cache_source"] == "mixed"
+    assert block["direct_requests"] == 1
+    assert block["estimated_requests"] == 1
+    assert block["cache_estimated"] is True
+    # 17000 / 19000，两条都进样本
+    assert block["hit_rate"] == pytest.approx(17_000 / 19_000)

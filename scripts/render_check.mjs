@@ -65,6 +65,9 @@ const document = {
     if (!registry.has(id)) registry.set(id, makeEl(id));
     return registry.get(id);
   },
+  // P0-B：页面用 document.hidden 决定是否排自动刷新定时器；
+  // 不补这个字段，桩环境会把它当 undefined（falsy → 可见），行为等价但不真实。
+  hidden: false,
   querySelector(sel) {
     if (!registry.has(sel)) registry.set(sel, makeEl(sel));
     return registry.get(sel);
@@ -189,6 +192,22 @@ check("数据来源角标已更新", !!src && !/加载中/.test(src.textContent)
 const cal = registry.get("chip-caliber");
 check("口径角标已标注", !!cal && /口径/.test(cal.textContent), cal && cal.textContent);
 
+/* ---------------- P0-B 自动检测状态必须常驻可见 ---------------- */
+// 没有这个芯片，用户无法区分「没有新调用」和「采集坏了」——两种情况下
+// 看板长得一模一样。断言芯片按 watcher 状态渲染成三态之一。
+// 读内层 chip-watch-text：外层 chip 里只有 SVG，文字在子 span 里。
+const watchText = txt("chip-watch-text");
+check(
+  "监控角标已渲染（实时监控中 / 监控已关闭 / 监控停滞 之一）",
+  /实时监控中|监控已关闭|监控停滞/.test(watchText),
+  watchText.slice(0, 40) || "芯片为空",
+);
+check(
+  "监控角标不是占位符",
+  watchText !== "" && watchText !== "—",
+  watchText.slice(0, 40),
+);
+
 /* ---------------- C-1 告警必须在界面上看得见 ---------------- */
 // 修复前：alerts 在整份 dashboard.html 里出现 0 次，告警只能在 /docs 里看。
 // 这里断言「告警数据确实被取回来了」——不是看抽屉（用户没点开时它本就该是空的）。
@@ -287,3 +306,6 @@ if (failed) {
   process.exit(1);
 }
 console.log(`RENDER: PASS  ${checks.length}/${checks.length} 项通过`);
+// 必须显式退出：页面脚本里的自动刷新定时器（P0-B）会拉住事件循环，
+// 不 exit 的话进程会白等 30s 才被外部杀掉，stdout 缓冲也跟着丢。
+process.exit(0);

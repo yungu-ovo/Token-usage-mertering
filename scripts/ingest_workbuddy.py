@@ -264,29 +264,51 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     if args.apply_placeholder_prices:
         apply_placeholder_prices(getattr(args, "placeholder_file", None))
 
-    records, stats = collect_mod.parse_records(since=args.since)
-    if not records:
-        print("没有可写入的记录")
+    incremental = bool(getattr(args, "incremental", False))
+    if incremental and args.api:
+        print("--incremental 与 --api 不兼容：增量扫描在本地库上进行，请去掉 --api")
         return 1
 
-    print(f"准备写入 {len(records)} 条记录…")
-
-    if args.api:
-        return _ingest_via_http(records, args)
+    records: list = []
+    if not incremental:
+        records, _stats = collect_mod.parse_records(since=args.since)
+        if args.api:
+            if not records:
+                print("没有可写入的记录")
+                return 1
+            return _ingest_via_http(records, args)
 
     init_db()
-    with tx() as conn:
-        summary = collect_mod.collect(conn, since=args.since, backfill_cache=True)
+    # 与调度器的采集轮互斥：排队等锁而不是撞 "database is locked"
+    with collect_mod.COLLECT_LOCK:
+        with tx() as conn:
+            summary = collect_mod.collect(
+                conn,
+                since=args.since,
+                backfill_cache=True,
+                incremental=incremental,
+            )
 
+    mode = "增量" if incremental else "全量"
+    print(f"[{mode}采集] 解析 {summary.get('parsed', 0)} 条记录")
+    scan = summary.get("scan") or {}
+    if scan:
+        print(
+            f"  扫描 {scan.get('files_seen', 0)} 个文件 · 新读 {scan.get('files_read', 0)} 个"
+            f"（其中新文件 {scan.get('new_files', 0)}）· 未变化 {scan.get('unchanged_files', 0)} 个"
+            f" · 截断重读 {scan.get('truncated_files', 0)} 个"
+        )
+
+    pinfo = summary.get("parser") or {}
     print("\n--- 解析器健康度（RK-07）---")
-    print(f"  解析器版本    : {stats.parser_name} v{stats.parser_version}")
-    print(f"  扫描行数      : {stats.scanned}（坏行 {stats.bad_lines}）")
-    print(f"  含用量记录    : {stats.usage_lines}")
-    print(f"  成功解析      : {stats.parsed}")
-    rate = stats.rate()
-    print("  解析成功率    : " + ("—（无样本）" if rate is None else f"{rate:.2%}"))
-    if stats.skipped:
-        print(f"  跳过原因      : {dict(stats.skipped)}")
+    print(f"  解析器版本    : {pinfo.get('parser')} v{pinfo.get('version')}")
+    print(f"  扫描行数      : {pinfo.get('scanned', 0)}（坏行 {pinfo.get('bad_lines', 0)}）")
+    print(f"  含用量记录    : {pinfo.get('usage_lines', 0)}")
+    print(f"  成功解析      : {pinfo.get('parsed', 0)}")
+    rate = pinfo.get("success_rate")
+    print("  解析成功率    : " + ("—（无样本）" if not rate else f"{float(rate):.2%}"))
+    if pinfo.get("skipped"):
+        print(f"  跳过原因      : {pinfo['skipped']}")
 
     ing = summary.get("ingest") or {}
     print("\n--- 写入结果 ---")
@@ -311,6 +333,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             "SELECT COUNT(*) AS c, SUM(cost_usd_micro) AS c1, "
             "SUM(COALESCE(equivalent_cost_usd_micro,0)) AS c2, "
             "SUM(COALESCE(vendor_credit_micro,0)) AS cred, "
+            "SUM(cache_read_tokens) AS cr, "
             "MIN(ts_day) AS lo, MAX(ts_day) AS hi FROM usage_fact"
         ).fetchone()
         priced = conn.execute(
@@ -320,6 +343,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         print(f"  厂商口径合计  : ${row['c1'] / 1e6:.4f}")
         print(f"  API 等价合计  : ${row['c2'] / 1e6:.4f}")
         print(f"  积分合计      : {row['cred'] / 1e6:.2f}")
+        print(f"  缓存读合计    : {row['cr'] or 0:,} tokens")
         print(f"  日期范围      : {row['lo']} .. {row['hi']}")
 
         if row["cred"] and row["c2"]:
@@ -440,13 +464,14 @@ def cmd_verify(args: argparse.Namespace) -> int:
             within += 1
         print(f"{sid[:37]:<38} {coverage:>6.1%} {j_total:>14,} {t_total:>14,} {diff:>+12,} {rate:>8.2%} {flag}")
 
-    # trace 是唯一带缓存读数的来源，这里顺带把缓存情况报出来
+    # trace 是会话级汇总，这里把两侧的缓存情况报出来做参照
     print()
     cached = sum(v["cache"] for v in per_session_trace.values())
     t_in = sum(v["in"] for v in per_session_trace.values())
     if t_in:
         print(f"trace 侧缓存读: {cached:,} / 输入 {t_in:,} = {cached / t_in:.1%}")
-        print("（jsonl 侧无缓存字段，因此库中 cache_read 恒为 0；缓存相关指标只能以 trace 为准）")
+        print("（jsonl 侧自 P0-A 起有请求级直报缓存读 prompt_cache_hit_tokens，")
+        print(" 与 trace 会话级汇总可互相印证；trace 留存不全时以 jsonl 直报为准）")
 
     print()
     print(f"可比会话（trace 覆盖 ≥{COVERAGE_MIN:.0%}）: {comparable}/{len(common)}")
@@ -507,7 +532,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="WorkBuddy 用量灌数（只读原始数据）")
     ap.add_argument("--inspect", action="store_true", help="只统计字段与分布，不写任何东西")
     ap.add_argument("--dry-run", action="store_true", help="解析并打印归一结果，不落库")
-    ap.add_argument("--ingest", action="store_true", help="真正写入数据库")
+    ap.add_argument("--ingest", action="store_true", help="真正写入数据库（默认全量；配 --incremental 走水位增量）")
+    ap.add_argument(
+        "--incremental",
+        action="store_true",
+        help="增量采集：只读文件水位后的新增行（常驻服务补采用；--ingest 默认全量）",
+    )
     ap.add_argument("--verify", action="store_true", help="与 traces 交叉校验")
     ap.add_argument(
         "--backfill-cache",

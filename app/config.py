@@ -67,11 +67,23 @@ BURN_RATE_MULTIPLIER = Decimal("3")
 # 预测耗尽告警的提前量（天）
 FORECAST_LEAD_DAYS = 7
 
-# ---------------------------------------------------------------- 采集（B-1 / B-2）
-# 定时采集：默认**关闭**。它会在后台定期读本机会话文件，
-# 「服务自己读」和「用户点一下才读」是两种不同的信任关系，该由用户显式开启。
-AUTO_COLLECT = os.environ.get("TUM_AUTO_COLLECT", "0") not in ("0", "false", "False", "")
-AUTO_COLLECT_INTERVAL_MINUTES = int(os.environ.get("TUM_AUTO_COLLECT_MINUTES", "30"))
+# ---------------------------------------------------------------- 采集（B-1 / B-2 / P0-B）
+# 自动检测与记录（P0-B）：**默认开启**。用户明确要求「只要在 WorkBuddy 中
+# 调用了模型，就自动检测并记录」——服务常驻即自动采集，无需人工点按钮。
+# 关闭：TUM_AUTO_COLLECT=0（顶栏会显示「监控已关闭」，采集退化为手动）。
+#
+# 双模扫描：
+#   * 增量轮（WATCH_INTERVAL_SECONDS，默认 15s）：只读文件水位后的新增行，
+#     毫秒级成本，做到「调用发生后秒级可查」；
+#   * 校准轮（CALIBRATION_MINUTES，默认 60min）：全量重扫一次，负责
+#     RK-07 的权威解析成功率分母、traces 回填、聚合表自愈。
+AUTO_COLLECT = os.environ.get("TUM_AUTO_COLLECT", "1") not in ("0", "false", "False", "")
+WATCH_INTERVAL_SECONDS = min(300, max(5, int(os.environ.get("TUM_WATCH_INTERVAL_SECONDS", "15"))))
+# 兼容旧变量名：TUM_AUTO_COLLECT_MINUTES 现在表示校准轮间隔（曾是定时采集间隔）
+CALIBRATION_MINUTES = min(1440, max(5, int(
+    os.environ.get("TUM_CALIBRATION_MINUTES",
+                   os.environ.get("TUM_AUTO_COLLECT_MINUTES", "60"))
+)))
 
 # 解析成功率下限（RK-07）：低于此值说明数据源格式变了，成本会被**少算**，必须告警
 PARSE_SUCCESS_MIN = Decimal(os.environ.get("TUM_PARSE_SUCCESS_MIN", "0.95"))

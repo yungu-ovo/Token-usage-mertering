@@ -303,6 +303,20 @@ def check_database(report: Report, db_path: Path) -> None:
                 not odd,
                 f"抽检 {len(rows)} 条" + (f"；异常 {odd[:3]}" if odd else ""),
             )
+
+        # 4e. P0-B：采集水位只存相对路径——绝对路径会带上用户名/盘符
+        if "source_file_state" in tables:
+            rows = conn.execute("SELECT path FROM source_file_state").fetchall()
+            absolute = [
+                r["path"]
+                for r in rows
+                if not r["path"] or r["path"][:2].endswith(":") or r["path"][0] in "/\\"
+            ]
+            report.add(
+                "采集水位只存相对路径（不含绝对路径/用户名）",
+                not absolute,
+                f"{len(rows)} 条水位" + (f"；违规 {absolute[:3]}" if absolute else ""),
+            )
     finally:
         conn.close()
 

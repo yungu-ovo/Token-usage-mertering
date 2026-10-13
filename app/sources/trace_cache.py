@@ -179,6 +179,11 @@ def backfill(
     """计算（或写入）缓存 token 补齐。
 
     ``apply=False``（默认）只算不写，用于 ``--dry-run``。
+
+    P0-A 之后的契约：jsonl 的 ``rawUsage.prompt_cache_hit_tokens`` 已能直报
+    请求级缓存读（见 ``workbuddy_jsonl`` 的 ``max_of``），这里退化为**缺口兜底**——
+    只处理 ``cache_read_tokens = 0`` 的行；某会话直报值已补齐时
+    ``remaining_target <= 0``，自动跳过（幂等路径不变）。
     """
     sessions = collect_sessions(home)
     stats = {
@@ -187,6 +192,7 @@ def backfill(
         "cache_read_tokens": 0,
         "low_coverage_sessions": 0,
         "skipped_no_trace": 0,
+        "touched_days": [],
         "samples": [],
     }
 
@@ -233,6 +239,9 @@ def backfill(
         stats["sessions"] += 1
         stats["requests"] += sum(1 for s in shares if s > 0)
         stats["cache_read_tokens"] += sum(shares)
+        for row, share in zip(pending, shares):
+            if share > 0 and row["ts_day"] not in stats["touched_days"]:
+                stats["touched_days"].append(row["ts_day"])
 
         if len(stats["samples"]) < 8:
             stats["samples"].append(
@@ -251,7 +260,8 @@ def backfill(
         if apply:
             for row, share in zip(pending, shares):
                 conn.execute(
-                    "UPDATE usage_fact SET cache_read_tokens = ? WHERE request_id = ?",
+                    "UPDATE usage_fact SET cache_read_tokens = ?, cache_source = 'trace_estimate' "
+                    "WHERE request_id = ?",
                     (share, row["request_id"]),
                 )
 

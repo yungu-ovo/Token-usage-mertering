@@ -456,10 +456,9 @@ def write_report(path: Path, results: Result, meta: dict, base: str) -> None:
         "",
         "## 已知限制（不作为验收项，供后续排期）",
         "",
-        "- jsonl 转录**不含缓存 token 字段**，因此库中 `cache_read_tokens` 恒为 0，"
-        "看板的缓存命中率/缓存节省两项处于「未上报」状态。",
-        "  交叉校验时发现 `traces/*.json` 里有 `totalCachedTokens`，样本显示缓存读占输入约 95%。"
-        "若要把缓存指标做真，需要把 traces 作为会话级的补充数据源接入（注意与 jsonl 的口径差异，避免重复计数）。",
+        "- jsonl 转录自 P0-A 起提供**请求级直报缓存读**（`rawUsage.prompt_cache_hit_tokens`，"
+        "实测覆盖 99.7% 的记录），命中率/缓存节省为事实口径；`traces/*.json` 的会话级"
+        "`totalCachedTokens` 降级为交叉校验与缺口兜底（仅补直报缺失的行）。",
         "- 会话转录只保留本机历史，30 天窗口内仅 7 天有数据，趋势图存在真实断点。",
         "- WorkBuddy 的模型名均为内部代号，内置公共价格表无法匹配；当前成本数字基于"
         "**显式标注的占位价格**（`--apply-placeholder-prices`），仅用于验证成本链路，不代表真实账单。",
